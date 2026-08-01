@@ -109,11 +109,17 @@ async function rpc(
 }
 
 /**
- * Run an MCP call, re-handshaking once if the server has dropped our session.
+ * Run an MCP call, re-handshaking if the server has dropped our session.
  *
  * Without this, a single expiry poisons the module-level session cache: every
  * later request on that warm instance fails, and it presents as "integrations
  * stopped working" with nothing in the logs to explain why.
+ *
+ * Three attempts, not two: under a concurrent burst, one caller's recovery
+ * can interleave with another's map delete, so a freshly handshaken caller
+ * may still fire one request with no session id. The extra attempt absorbs
+ * that window; genuine outages still fail fast because ensureInitialised
+ * itself errors.
  */
 async function withSession<T>(
   url: string,
@@ -121,16 +127,16 @@ async function withSession<T>(
   signal: AbortSignal | undefined,
   attempt: () => Promise<McpResult<T>>,
 ): Promise<McpResult<T>> {
-  const init = await ensureInitialised(url, apiKey, signal);
-  if (!init.ok) return init;
+  let last: McpResult<T> = { ok: false, error: "MCP call never ran." };
+  for (let tries = 0; tries < 3; tries++) {
+    const init = await ensureInitialised(url, apiKey, signal);
+    if (!init.ok) return init;
 
-  const first = await attempt();
-  if (first.ok || !first.retryable) return first;
-
-  sessions.delete(url);
-  const again = await ensureInitialised(url, apiKey, signal);
-  if (!again.ok) return again;
-  return attempt();
+    last = await attempt();
+    if (last.ok || !last.retryable) return last;
+    sessions.delete(url);
+  }
+  return last;
 }
 
 /** Handles both a plain JSON reply and an SSE stream carrying one. */
@@ -157,36 +163,52 @@ async function readBody(res: Response): Promise<any | null> {
   return null;
 }
 
+/**
+ * Concurrent callers coalesce onto one handshake. Without this, a burst of
+ * calls after an expiry races eight initializes whose map writes interleave
+ * with each other's deletes — and a caller can end up "initialised" with an
+ * empty session id.
+ */
+const inflightInit = new Map<string, Promise<McpResult<true>>>();
+
 /** MCP requires an initialize handshake before any other call. */
-async function ensureInitialised(
+function ensureInitialised(
   url: string,
   apiKey: string,
   signal?: AbortSignal,
 ): Promise<McpResult<true>> {
-  if (sessions.get(url)?.initialised) return { ok: true, data: true };
+  if (sessions.get(url)?.initialised) return Promise.resolve({ ok: true, data: true });
 
-  const res = await rpc(
-    url,
-    apiKey,
-    "initialize",
-    {
-      protocolVersion: PROTOCOL_VERSION,
-      capabilities: {},
-      clientInfo: { name: "jarvis-web", version: "1.0.0" },
-    },
-    signal,
-  );
-  if (!res.ok) return res;
+  const pending = inflightInit.get(url);
+  if (pending) return pending;
 
-  const existing = sessions.get(url);
-  sessions.set(url, { id: existing?.id ?? "", initialised: true });
+  const job = (async (): Promise<McpResult<true>> => {
+    const res = await rpc(
+      url,
+      apiKey,
+      "initialize",
+      {
+        protocolVersion: PROTOCOL_VERSION,
+        capabilities: {},
+        clientInfo: { name: "carvis-web", version: "1.0.0" },
+      },
+      signal,
+    );
+    if (!res.ok) return res;
 
-  // The spec requires this before any other request, so await it rather than
-  // racing it against tools/list — a strict server rejects the request that
-  // wins that race.
-  await rpc(url, apiKey, "notifications/initialized", {}, signal, true).catch(() => undefined);
+    const existing = sessions.get(url);
+    sessions.set(url, { id: existing?.id ?? "", initialised: true });
 
-  return { ok: true, data: true };
+    // The spec requires this before any other request, so await it rather
+    // than racing it against tools/list — a strict server rejects the request
+    // that wins that race.
+    await rpc(url, apiKey, "notifications/initialized", {}, signal, true).catch(() => undefined);
+
+    return { ok: true, data: true };
+  })();
+
+  inflightInit.set(url, job);
+  return job.finally(() => inflightInit.delete(url));
 }
 
 export async function listTools(
