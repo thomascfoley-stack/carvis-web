@@ -22,6 +22,7 @@ export default function Jarvis() {
   const [interim, setInterim] = useState("");
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
+  const [voiceError, setVoiceError] = useState("");
   const [listening, setListening] = useState(false);
   const [speaking, setSpeaking] = useState(false);
   const [thinking, setThinking] = useState(false);
@@ -51,6 +52,13 @@ export default function Jarvis() {
   if (!speakerRef.current && typeof window !== "undefined") {
     speakerRef.current = new Speaker();
   }
+
+  // Voice failures must be visible. Silently missing audio reads as "broken"
+  // with no way to tell whether the model, the network, or a key is at fault.
+  useEffect(() => {
+    const speaker = speakerRef.current;
+    if (speaker) speaker.onError = (m) => setVoiceError(m);
+  }, []);
 
   const level = useCallback(() => speakerRef.current?.level() ?? 0, []);
 
@@ -262,6 +270,11 @@ export default function Jarvis() {
 
       <section className="readout">
         {error && <p className="line error">{error}</p>}
+        {voiceError && (
+          <p className="line error">
+            Voice: {voiceError} — using the on-device voice instead.
+          </p>
+        )}
         {configIssue && !error && <p className="line muted">{configIssue}</p>}
 
         {status && <p className="line status">{status}…</p>}
