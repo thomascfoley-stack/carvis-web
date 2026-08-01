@@ -33,5 +33,9 @@ export function middleware(req: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|icon.svg).*)"],
+  // The PWA assets must stay reachable signed-out: iOS fetches the touch icon
+  // and manifest without cookies, and a 307 to /login breaks Add-to-Home-Screen.
+  matcher: [
+    "/((?!_next/static|_next/image|favicon.ico|icon.svg|apple-touch-icon.png|manifest.webmanifest).*)",
+  ],
 };
