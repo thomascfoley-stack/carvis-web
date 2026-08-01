@@ -55,6 +55,11 @@ export class Speaker {
     if (this.ctx.state === "suspended") void this.ctx.resume();
   }
 
+  /** Frequency bands are far richer than RMS for driving a visualisation. */
+  getAnalyser(): AnalyserNode | null {
+    return this.analyser;
+  }
+
   get ready(): boolean {
     return !!this.ctx;
   }
@@ -76,10 +81,9 @@ export class Speaker {
     for (const l of this.listeners) l(v);
   }
 
-  /** Smoothed RMS of what's playing, 0..1. Drives the orb. */
+  /** Smoothed RMS of what's playing, 0..1. */
   level(): number {
     if (!this.analyser || !this.timeData) {
-      // The on-device voice gives us no signal to analyse, so fake a pulse.
       if (this.speaking) {
         this.levelValue = 0.35 + 0.25 * Math.sin(Date.now() / 90);
         return this.levelValue;
@@ -159,8 +163,8 @@ export class Speaker {
         try {
           return await this.ctx.decodeAudioData(bytes);
         } catch {
-          // Provider returned 200 but not decodable audio (an HTML error page,
-          // or a format this browser can't handle).
+          // 200 but not decodable audio (an HTML error page, or a format this
+          // browser can't handle).
           this.onError("The voice provider returned audio this browser can't play.");
           this.useBrowserVoice = true;
           this.speakOnDevice(clean);
