@@ -20,13 +20,17 @@ export async function startMicAnalyser(): Promise<AnalyserNode | null> {
 
   starting = true;
   try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-    });
+    // Construct the context BEFORE awaiting the permission prompt: on iOS a
+    // context created outside the user-gesture call stack starts suspended
+    // and stays that way.
     const Ctor =
       window.AudioContext ||
       (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     ctx = new Ctor();
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
+    if (ctx.state === "suspended") void ctx.resume().catch(() => undefined);
     const src = ctx.createMediaStreamSource(stream);
     analyser = ctx.createAnalyser();
     analyser.fftSize = 256;

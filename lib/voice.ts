@@ -54,7 +54,9 @@ export class Listener {
 
   start(): void {
     if (!this.supported) {
-      this.handlers.onError("This browser can't do speech recognition. Use Chrome, or type below.");
+      this.handlers.onError(
+        "No speech recognition here — on iPhone every browser lacks it, so type below. On Android or desktop, Chrome has it.",
+      );
       return;
     }
     this.wantActive = true;
