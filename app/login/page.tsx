@@ -51,6 +51,10 @@ export default function LoginPage() {
               onChange={(e) => setCode(e.target.value)}
               placeholder="required while in beta"
               autoComplete="off"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              enterKeyHint="go"
               required
             />
           </div>
