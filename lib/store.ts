@@ -66,18 +66,31 @@ function envDefaults(): Settings {
     return "";
   };
 
+  // Defaults are Anthropic for reasoning and OpenAI for voice — the two most
+  // widely trusted vendors. Every other provider stays one dropdown away.
+  const ttsProvider =
+    env("JARVIS_TTS_PROVIDER") ||
+    (env("OPENAI_API_KEY") ? "openai" : env("FISH_API_KEY") ? "fish" : "openai");
+
+  const preferMoonshot = !!env("MOONSHOT_API_KEY") && !env("ANTHROPIC_API_KEY");
+
   return {
     llm: {
-      providerId: env("JARVIS_LLM_PROVIDER") || "moonshot",
-      model: env("JARVIS_FAST_MODEL") || "kimi-k2.7-code-highspeed",
+      providerId: env("JARVIS_LLM_PROVIDER") || (preferMoonshot ? "moonshot" : "anthropic"),
+      model:
+        env("JARVIS_FAST_MODEL") ||
+        (preferMoonshot ? "kimi-k2.7-code-highspeed" : "claude-haiku-4-5-20251001"),
       baseUrl: env("JARVIS_BASE_URL", "ANTHROPIC_BASE_URL"),
-      apiKey: env("JARVIS_API_KEY", "MOONSHOT_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"),
+      apiKey: env("JARVIS_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "MOONSHOT_API_KEY"),
     },
     tts: {
-      providerId: env("JARVIS_TTS_PROVIDER") || "fish",
-      voiceId: env("FISH_VOICE_ID") || "612b878b113047d9a770c069c8b4fdfe",
-      model: env("FISH_MODEL") || "speech-1.6",
-      apiKey: env("FISH_API_KEY"),
+      providerId: ttsProvider,
+      voiceId:
+        env("JARVIS_TTS_VOICE") ||
+        (ttsProvider === "fish" ? "612b878b113047d9a770c069c8b4fdfe" : "onyx"),
+      model:
+        env("JARVIS_TTS_MODEL") || (ttsProvider === "fish" ? "speech-1.6" : "gpt-4o-mini-tts"),
+      apiKey: ttsProvider === "fish" ? env("FISH_API_KEY") : env("OPENAI_API_KEY", "FISH_API_KEY"),
     },
     prefs: {
       userName: env("USER_NAME") || "sir",
