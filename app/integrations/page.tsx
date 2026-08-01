@@ -118,7 +118,7 @@ export default function IntegrationsPage() {
       </Link>
       <h1>Integrations</h1>
       <p className="sub">
-        Everything JARVIS can reach, brokered by Composio — one provider, one place to authorise.
+        Everything CARVIS can reach, brokered by Composio — one provider, one place to authorise.
         {data?.total ? ` ${data.total} toolkits available.` : ""}
       </p>
 
