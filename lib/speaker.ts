@@ -13,11 +13,21 @@
 
 type Listener = (speaking: boolean) => void;
 
+/**
+ * Interrupting is a normal, frequent event, and it aborts every in-flight
+ * request. Those rejections are not failures and must never reach the user.
+ */
+function isAbort(e: unknown): boolean {
+  const err = e as { name?: string; message?: string } | null;
+  if (err?.name === "AbortError") return true;
+  return /abort/i.test(String(err?.message ?? e ?? ""));
+}
+
 export class Speaker {
   private ctx: AudioContext | null = null;
   private analyser: AnalyserNode | null = null;
 
-  private queue: { text: string; job: Promise<AudioBuffer | null> }[] = [];
+  private queue: { text: string; job: Promise<AudioBuffer | null>; aside: boolean }[] = [];
   private draining = false;
   private current: AudioBufferSourceNode | null = null;
   private controllers: AbortController[] = [];
@@ -36,8 +46,12 @@ export class Speaker {
   /** Set when the server tells us to use the on-device voice instead. */
   private useBrowserVoice = false;
 
-  /** Surfaced to the UI. A silent failure is the worst possible outcome here. */
-  onError: (message: string) => void = () => {};
+  /**
+   * Surfaced to the UI. A silent failure is the worst possible outcome here.
+   * `fellBack` says whether the on-device voice took over, so the UI can stop
+   * claiming a fallback that didn't happen.
+   */
+  onError: (message: string, fellBack: boolean) => void = () => {};
 
   /** Must be called from a user gesture — browsers block audio otherwise. */
   unlock(): void {
@@ -55,7 +69,7 @@ export class Speaker {
     if (this.ctx.state === "suspended") void this.ctx.resume();
   }
 
-  /** Frequency bands are far richer than RMS for driving a visualisation. */
+  /** Frequency data is far richer than RMS for driving a visualisation. */
   getAnalyser(): AnalyserNode | null {
     return this.analyser;
   }
@@ -81,9 +95,10 @@ export class Speaker {
     for (const l of this.listeners) l(v);
   }
 
-  /** Smoothed RMS of what's playing, 0..1. */
+  /** Smoothed RMS of what's playing, 0..1. Drives the orb. */
   level(): number {
     if (!this.analyser || !this.timeData) {
+      // The on-device voice gives us no signal to analyse, so fake a pulse.
       if (this.speaking) {
         this.levelValue = 0.35 + 0.25 * Math.sin(Date.now() / 90);
         return this.levelValue;
@@ -113,12 +128,18 @@ export class Speaker {
     return this.levelValue;
   }
 
-  enqueue(text: string): void {
+  /**
+   * `aside` marks something JARVIS says *about* the work rather than as part
+   * of the answer — "still working on that". It is spoken but kept out of the
+   * heard-transcript, so interrupting mid-progress doesn't rewrite the reply
+   * to a status line.
+   */
+  enqueue(text: string, aside = false): void {
     const clean = text.trim();
     if (!clean) return;
 
     if (this.useBrowserVoice) {
-      this.speakOnDevice(clean);
+      this.speakOnDevice(clean, aside);
       return;
     }
     if (!this.ctx) return;
@@ -139,7 +160,7 @@ export class Speaker {
         if (res.status === 409) {
           // Server is configured for the on-device voice.
           this.useBrowserVoice = true;
-          this.speakOnDevice(clean);
+          this.speakOnDevice(clean, aside);
           return null;
         }
 
@@ -151,9 +172,9 @@ export class Speaker {
             .json()
             .then((d) => d?.error ?? `voice provider error ${res.status}`)
             .catch(() => `voice provider error ${res.status}`);
-          this.onError(String(detail));
+          this.onError(String(detail), true);
           this.useBrowserVoice = true;
-          this.speakOnDevice(clean);
+          this.speakOnDevice(clean, aside);
           return null;
         }
 
@@ -163,22 +184,25 @@ export class Speaker {
         try {
           return await this.ctx.decodeAudioData(bytes);
         } catch {
-          // 200 but not decodable audio (an HTML error page, or a format this
-          // browser can't handle).
-          this.onError("The voice provider returned audio this browser can't play.");
+          // Provider returned 200 but not decodable audio (an HTML error page,
+          // or a format this browser can't handle).
+          this.onError("The voice provider returned audio this browser can't play.", true);
           this.useBrowserVoice = true;
-          this.speakOnDevice(clean);
+          this.speakOnDevice(clean, aside);
           return null;
         }
       } catch (e) {
-        this.onError(`Could not reach the voice service: ${String(e).slice(0, 120)}`);
+        // Interrupting cancels every queued request. That is the feature
+        // working, not the voice breaking — say nothing.
+        if (isAbort(e) || gen !== this.generation) return null;
+        this.onError(`Could not reach the voice service: ${String(e).slice(0, 120)}`, false);
         return null;
       } finally {
         this.controllers = this.controllers.filter((c) => c !== ac);
       }
     })();
 
-    this.queue.push({ text: clean, job });
+    this.queue.push({ text: clean, job, aside });
     void this.drain(gen);
   }
 
@@ -215,7 +239,7 @@ export class Speaker {
         });
 
         if (gen === this.generation) {
-          this.spoken.push(head.text);
+          if (!head.aside) this.spoken.push(head.text);
           this.playing = null;
         }
       }
@@ -229,7 +253,7 @@ export class Speaker {
   }
 
   /** Free, zero-latency, on-device voice. Robotic, but always available. */
-  private speakOnDevice(text: string): void {
+  private speakOnDevice(text: string, aside = false): void {
     if (typeof window === "undefined" || !window.speechSynthesis) return;
 
     const utter = new SpeechSynthesisUtterance(text);
@@ -244,7 +268,7 @@ export class Speaker {
 
     utter.onstart = () => this.setSpeaking(true);
     utter.onend = () => {
-      this.spoken.push(text);
+      if (!aside) this.spoken.push(text);
       if (!window.speechSynthesis.speaking) this.setSpeaking(false);
     };
 
