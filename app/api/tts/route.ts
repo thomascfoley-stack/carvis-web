@@ -28,6 +28,12 @@ export async function POST(req: Request) {
 
   const creds = await loadCredentials(session.email);
 
+  // Auditioning a voice has to work before you commit to it, so the setup page
+  // may override the voice and model. The provider and key always come from
+  // stored credentials — a request can never nominate where the key is sent.
+  const voiceId = String(body?.voice ?? "").trim().slice(0, 200) || creds.ttsVoice;
+  const model = String(body?.model ?? "").trim().slice(0, 100) || creds.ttsModel;
+
   // 409 tells the client to use the on-device voice rather than fail silently.
   if (!creds.ttsKey && creds.ttsProvider !== "browser") {
     return Response.json({ error: "browser-tts" }, { status: 409 });
@@ -37,8 +43,8 @@ export async function POST(req: Request) {
     text,
     {
       providerId: creds.ttsProvider,
-      voiceId: creds.ttsVoice,
-      model: creds.ttsModel,
+      voiceId,
+      model,
       apiKey: creds.ttsKey,
     },
     req.signal,
