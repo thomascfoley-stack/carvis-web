@@ -1,6 +1,7 @@
 import { allowedEmails, clearSession, inviteCode, sessionFromRequest } from "@/lib/auth";
 import { composioEnabled } from "@/lib/composio";
-import { dbEnabled, findUser, todayUsage } from "@/lib/db";
+import { isOnboarded, loadCredentials } from "@/lib/credentials";
+import { dbEnabled } from "@/lib/db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -8,16 +9,14 @@ export const dynamic = "force-dynamic";
 export async function GET(req: Request) {
   const session = await sessionFromRequest(req);
 
-  let usage: { messages: number; limit: number } | null = null;
-  if (session && dbEnabled()) {
+  // No usage reporting: with bring-your-own-key there is no shared spend to
+  // meter, so there is no quota to report.
+  let onboarded = false;
+  if (session) {
     try {
-      const [today, user] = await Promise.all([
-        todayUsage(session.email),
-        findUser(session.email),
-      ]);
-      usage = { messages: today.messages, limit: user?.daily_limit ?? 50 };
+      onboarded = isOnboarded(await loadCredentials(session.email));
     } catch {
-      /* usage is informational only */
+      /* informational only */
     }
   }
 
@@ -25,11 +24,11 @@ export async function GET(req: Request) {
     // Never leak the code itself — only whether one is required.
     inviteRequired: !!inviteCode(),
     allowlistRestricted: allowedEmails().length > 0,
-    // Composio brokers sign-in AND integrations; it is the only auth secret.
-    composio: composioEnabled(),
+    // This deployment's Composio key brokers Google sign-in only.
+    signInBroker: composioEnabled(),
     database: dbEnabled(),
     email: session?.email ?? null,
-    usage,
+    onboarded,
   });
 }
 
