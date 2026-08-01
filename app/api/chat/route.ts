@@ -7,7 +7,7 @@ import { streamLLM, type CanonMsg, type ToolCall } from "@/lib/providers/llm";
 import { getSettings } from "@/lib/store";
 import { runTool, toolCatalogue, toolLabel } from "@/lib/tools";
 
-export const runtime = "edge";
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const MAX_TOOL_ROUNDS = 4;
