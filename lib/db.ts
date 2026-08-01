@@ -367,6 +367,28 @@ export async function dbSaveVoices(
 
 /* ------------------------------ failures ------------------------------ */
 
+/**
+ * The reproduction sample passes through the same scrubber as every message,
+ * because a tool input can quote an upstream error that quotes a key. Redaction
+ * or truncation can break the JSON; when it does, the result is wrapped rather
+ * than dropped — a mangled reproduction still beats none.
+ */
+export function safeSampleJson(input: unknown): string {
+  let raw: string;
+  try {
+    raw = JSON.stringify(input ?? null) ?? "null";
+  } catch {
+    raw = "null";
+  }
+  const safe = redact(raw).slice(0, 2000);
+  try {
+    JSON.parse(safe);
+    return safe;
+  } catch {
+    return JSON.stringify({ redacted: safe });
+  }
+}
+
 export async function recordFailure(args: {
   node: string;
   errorClass: string;
@@ -379,21 +401,80 @@ export async function recordFailure(args: {
     const sql = client();
 
     // Strip digits and quoted literals so "user 123 not found" and
-    // "user 456 not found" collapse to one fingerprint.
+    // "user 456 not found" collapse to one fingerprint. Node names and error
+    // text can be influenced by a tenant's own MCP endpoint, so both the node
+    // component and the whole key are capped — cardinality is an attack
+    // surface here, not just an aesthetic.
+    const node = args.node.slice(0, 80);
     const clean = redact(args.message);
-    const normalized = clean.replace(/\d+/g, "N").replace(/'[^']*'/g, "'X'").slice(0, 200);
-    const fingerprint = `${args.node}:${args.errorClass}:${normalized}`.slice(0, 300);
+    const normalized = clean
+      .replace(/\d+/g, "N")
+      .replace(/'[^']*'/g, "'X'")
+      .replace(/"[^"]*"/g, '"X"')
+      .slice(0, 200);
+    const fingerprint = `${node}:${args.errorClass.slice(0, 40)}:${normalized}`.slice(0, 300);
 
     await sql`
       INSERT INTO failures (fingerprint, node, error_class, message, sample_input)
-      VALUES (${fingerprint}, ${args.node}, ${args.errorClass}, ${clean.slice(0, 2000)},
-              ${JSON.stringify(args.input ?? null)}::jsonb)
+      VALUES (${fingerprint}, ${node}, ${args.errorClass.slice(0, 40)}, ${clean.slice(0, 2000)},
+              ${safeSampleJson(args.input)}::jsonb)
       ON CONFLICT (fingerprint) DO UPDATE
         SET occurrences = failures.occurrences + 1,
             last_seen   = now(),
-            status      = CASE WHEN failures.status = 'fixed' THEN 'open' ELSE failures.status END
+            -- 'fixed' and 'stale' both claim "this stopped happening" — a
+            -- recurrence disproves either, so both reopen.
+            status      = CASE WHEN failures.status IN ('fixed', 'stale')
+                               THEN 'open' ELSE failures.status END
     `;
+
+    // Amortised trim, same idiom as the memory cap: a tenant pointing their
+    // MCP endpoint at a random-error generator must not grow this table
+    // without bound. Keep the most recent distinct fingerprints.
+    if (Math.random() < 0.02) {
+      await sql`
+        DELETE FROM failures
+        WHERE fingerprint NOT IN (
+          SELECT fingerprint FROM failures ORDER BY last_seen DESC LIMIT 2000
+        )
+      `.catch(() => undefined);
+    }
   } catch {
     // Never let telemetry break the request it is observing.
   }
+}
+
+export type FailureRow = {
+  fingerprint: string;
+  node: string;
+  error_class: string;
+  message: string;
+  sample_input: unknown;
+  occurrences: number;
+  first_seen: string;
+  last_seen: string;
+  status: string;
+};
+
+/** The fixer agent's queue. `status=all` is for the human reading over its shoulder. */
+export async function listFailures(status: "open" | "all"): Promise<FailureRow[]> {
+  if (!dbEnabled()) return [];
+  await ensureSchema();
+  const sql = client();
+  const rows = (await (status === "all"
+    ? sql`SELECT * FROM failures ORDER BY last_seen DESC LIMIT 200`
+    : sql`SELECT * FROM failures WHERE status = 'open' ORDER BY occurrences DESC, last_seen DESC LIMIT 100`)) as unknown as FailureRow[];
+  return rows;
+}
+
+export const FAILURE_STATUSES = ["open", "triaged", "pr_open", "fixed", "stale"] as const;
+
+export async function setFailureStatus(fingerprint: string, status: string): Promise<boolean> {
+  if (!dbEnabled()) return false;
+  if (!(FAILURE_STATUSES as readonly string[]).includes(status)) return false;
+  await ensureSchema();
+  const sql = client();
+  const rows = (await sql`
+    UPDATE failures SET status = ${status} WHERE fingerprint = ${fingerprint} RETURNING fingerprint
+  `) as unknown as { fingerprint: string }[];
+  return rows.length > 0;
 }
