@@ -1,5 +1,6 @@
 import {
   STATE_COOKIE,
+  allowedEmails,
   clearState,
   createSession,
   isAllowed,
@@ -47,6 +48,12 @@ export async function GET(req: Request) {
   const email = await gmailAddress();
   if (!email) {
     return fail(origin, "Connected, but Gmail did not return a profile. Check the Gmail scopes.");
+  }
+  if (!allowedEmails().length) {
+    return fail(
+      origin,
+      "No allowlist configured. Set JARVIS_ALLOWED_EMAILS in Vercel before anyone can sign in.",
+    );
   }
   if (!isAllowed(email)) {
     return fail(origin, `${email} is not on the allowlist for this instance.`);

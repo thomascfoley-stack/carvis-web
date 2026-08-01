@@ -30,15 +30,18 @@ export function allowedEmails(): string[] {
 }
 
 /**
- * Auth is enforced only once an allowlist exists. That keeps a brand-new
- * deploy reachable so you can configure it, rather than locking you out of the
- * settings page that sets it up.
+ * Login is ALWAYS enforced. There is no "open until configured" mode.
+ *
+ * That matters more than it looks: Composio is single-tenant here, so a
+ * stranger who clicked "Sign in with Google" would complete the flow against
+ * the owner's connected account and be handed the owner's identity. An empty
+ * allowlist must therefore deny everyone, never admit everyone.
  */
-export const authConfigured = () => allowedEmails().length > 0;
+export const authConfigured = () => true;
 
 export function isAllowed(email: string): boolean {
   const list = allowedEmails();
-  if (!list.length) return true;
+  if (!list.length) return false;
   return list.includes(email.trim().toLowerCase());
 }
 
