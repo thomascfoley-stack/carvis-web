@@ -492,7 +492,7 @@ export async function loopSuites(ctx, rounds) {
         const res = await api("/api/chat", {
           method: "POST",
           body: JSON.stringify({
-            messages: [{ role: "user", text: `TOOL:echo_tool:{\"text\":\"c${i}\"}` }],
+            messages: [{ role: "user", text: `TOOL:echo_tool:{"text":"c${i}"}` }],
           }),
         });
         ok(joinText(await res.text()).includes(`echo:c${i}`));
