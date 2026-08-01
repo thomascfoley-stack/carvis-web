@@ -20,7 +20,7 @@ export type McpTool = {
   inputSchema: { type: "object"; properties: Record<string, unknown>; required?: string[] };
 };
 
-export type McpResult<T> = { ok: true; data: T } | { ok: false; error: string };
+export type McpResult<T> = { ok: true; data: T } | { ok: false; error: string; retryable?: boolean };
 
 const PROTOCOL_VERSION = "2025-06-18";
 
@@ -31,12 +31,24 @@ const sessions = new Map<string, Session>();
 
 let nextId = 1;
 
+/**
+ * Does this look like the server having forgotten our session rather than a
+ * genuine failure? Streamable HTTP answers a dead session id with 404 (and
+ * sometimes 400), which otherwise turns one expiry into every subsequent call
+ * failing for the lifetime of a warm serverless instance.
+ */
+function looksLikeDeadSession(status: number, detail: string): boolean {
+  if (status === 404) return true;
+  return (status === 400 || status === 401) && /session/i.test(detail);
+}
+
 async function rpc(
   url: string,
   apiKey: string,
   method: string,
   params: Record<string, unknown>,
   signal?: AbortSignal,
+  isNotification = false,
 ): Promise<McpResult<any>> {
   if (!url) return { ok: false, error: "No MCP endpoint configured." };
 
@@ -54,12 +66,18 @@ async function rpc(
   }
   if (session?.id) headers["mcp-session-id"] = session.id;
 
+  // JSON-RPC notifications carry no id. Sending one makes it a request, which
+  // a strict server answers with an error.
+  const payload = isNotification
+    ? { jsonrpc: "2.0", method, params }
+    : { jsonrpc: "2.0", id: nextId++, method, params };
+
   let res: Response;
   try {
     res = await fetch(url, {
       method: "POST",
       headers,
-      body: JSON.stringify({ jsonrpc: "2.0", id: nextId++, method, params }),
+      body: JSON.stringify(payload),
       signal,
       cache: "no-store",
     });
@@ -72,8 +90,15 @@ async function rpc(
 
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
+    if (looksLikeDeadSession(res.status, detail)) {
+      sessions.delete(url);
+      return { ok: false, error: `MCP ${res.status}: session expired`, retryable: true };
+    }
     return { ok: false, error: `MCP ${res.status}: ${redact(detail).slice(0, 200)}` };
   }
+
+  // A notification is acknowledged with 202 and an empty body.
+  if (isNotification || res.status === 202) return { ok: true, data: null };
 
   const body = await readBody(res);
   if (!body) return { ok: false, error: "MCP returned an empty response." };
@@ -81,6 +106,31 @@ async function rpc(
     return { ok: false, error: redact(body.error.message ?? "MCP error").slice(0, 250) };
   }
   return { ok: true, data: body.result };
+}
+
+/**
+ * Run an MCP call, re-handshaking once if the server has dropped our session.
+ *
+ * Without this, a single expiry poisons the module-level session cache: every
+ * later request on that warm instance fails, and it presents as "integrations
+ * stopped working" with nothing in the logs to explain why.
+ */
+async function withSession<T>(
+  url: string,
+  apiKey: string,
+  signal: AbortSignal | undefined,
+  attempt: () => Promise<McpResult<T>>,
+): Promise<McpResult<T>> {
+  const init = await ensureInitialised(url, apiKey, signal);
+  if (!init.ok) return init;
+
+  const first = await attempt();
+  if (first.ok || !first.retryable) return first;
+
+  sessions.delete(url);
+  const again = await ensureInitialised(url, apiKey, signal);
+  if (!again.ok) return again;
+  return attempt();
 }
 
 /** Handles both a plain JSON reply and an SSE stream carrying one. */
@@ -131,8 +181,10 @@ async function ensureInitialised(
   const existing = sessions.get(url);
   sessions.set(url, { id: existing?.id ?? "", initialised: true });
 
-  // Best-effort notification; servers that don't want it simply ignore it.
-  void rpc(url, apiKey, "notifications/initialized", {}, signal).catch(() => undefined);
+  // The spec requires this before any other request, so await it rather than
+  // racing it against tools/list — a strict server rejects the request that
+  // wins that race.
+  await rpc(url, apiKey, "notifications/initialized", {}, signal, true).catch(() => undefined);
 
   return { ok: true, data: true };
 }
@@ -142,10 +194,9 @@ export async function listTools(
   apiKey: string,
   signal?: AbortSignal,
 ): Promise<McpResult<McpTool[]>> {
-  const init = await ensureInitialised(url, apiKey, signal);
-  if (!init.ok) return init;
-
-  const res = await rpc(url, apiKey, "tools/list", {}, signal);
+  const res = await withSession(url, apiKey, signal, () =>
+    rpc(url, apiKey, "tools/list", {}, signal),
+  );
   if (!res.ok) return res;
 
   const raw = Array.isArray(res.data?.tools) ? res.data.tools : [];
@@ -170,10 +221,9 @@ export async function callTool(
   args: Record<string, unknown>,
   signal?: AbortSignal,
 ): Promise<McpResult<string>> {
-  const init = await ensureInitialised(url, apiKey, signal);
-  if (!init.ok) return init;
-
-  const res = await rpc(url, apiKey, "tools/call", { name, arguments: args }, signal);
+  const res = await withSession(url, apiKey, signal, () =>
+    rpc(url, apiKey, "tools/call", { name, arguments: args }, signal),
+  );
   if (!res.ok) return res;
 
   // MCP returns content blocks; flatten to text for the model.
