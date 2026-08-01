@@ -143,12 +143,20 @@ export async function POST(req: Request) {
             } else if (ev.type === "error") {
               send({ t: "error", v: redact(ev.message) });
               failed = true;
-              void recordFailure({
-                node: `llm.${creds.llmProvider}`,
-                errorClass: "ModelStreamError",
-                message: ev.message,
-                input: { model: creds.llmModel },
-              });
+              // Same noise discipline as the graph nodes: a hang-up mid-fetch
+              // and the user's own bad key (401/403) are not app defects.
+              if (
+                !req.signal.aborted &&
+                !/abort/i.test(ev.message) &&
+                !/\b40[13]\b/.test(ev.message)
+              ) {
+                await recordFailure({
+                  node: `llm.${creds.llmProvider}`,
+                  errorClass: "ModelStreamError",
+                  message: ev.message,
+                  input: { model: creds.llmModel },
+                });
+              }
             }
           }
 
@@ -166,14 +174,7 @@ export async function POST(req: Request) {
                   signal: req.signal,
                 }),
               );
-              if (/^(That failed|Tool error|That needs an MCP)/.test(content)) {
-                void recordFailure({
-                  node: `tool.${c.name}`,
-                  errorClass: "ToolFailed",
-                  message: content.slice(0, 500),
-                  input: c.input ?? {},
-                });
-              }
+              // Failure capture lives inside runTool's graph node now.
               return { id: c.id, name: c.name, content };
             }),
           );
@@ -215,9 +216,9 @@ export async function POST(req: Request) {
 
         send({ t: "done" });
       } catch (e: any) {
-        if (e?.name !== "AbortError") {
+        if (e?.name !== "AbortError" && !req.signal.aborted) {
           send({ t: "error", v: redact(e?.message ?? e).slice(0, 300) });
-          void recordFailure({
+          await recordFailure({
             node: "chat.stream",
             errorClass: e?.name ?? "Error",
             message: String(e?.message ?? e).slice(0, 500),
