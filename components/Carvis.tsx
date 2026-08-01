@@ -284,6 +284,16 @@ export default function Carvis() {
     };
   }, []);
 
+  // Coming back from the background (or a phone call) leaves the AudioContext
+  // suspended on mobile. Resume it, or the next reply is silent.
+  useEffect(() => {
+    const onVisible = () => {
+      if (!document.hidden && speakerRef.current?.ready) speakerRef.current.unlock();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, []);
+
   /* -------------------------------- view ------------------------------ */
 
   const lastAssistant = partial || turns.filter((t) => t.role === "assistant").slice(-1)[0]?.text;
@@ -329,7 +339,8 @@ export default function Carvis() {
 
         {started && !supported && (
           <p className="line muted">
-            This browser has no speech recognition — use Chrome for voice, or type below.
+            No speech recognition in this browser — on iPhone, type below (every iOS
+            browser lacks it). On Android or desktop, Chrome has full voice.
           </p>
         )}
         {backgroundJob && (
