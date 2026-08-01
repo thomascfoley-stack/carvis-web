@@ -102,8 +102,10 @@ void main() {
   // Rim brightening: points facing away from the camera glow more.
   vGlow = pow(1.0 - abs(normalize(mv.xyz).z), 2.0);
 
-  float size = 2.0 + uAudio * 3.2 + thinking * 1.0;
-  gl_PointSize = size * uPixelRatio * (300.0 / -mv.z);
+  // Keep sprites genuinely small. Additive blending accumulates, so oversized
+  // points stack into a solid white disc instead of reading as a particle field.
+  float size = 1.0 + uAudio * 0.9 + thinking * 0.3;
+  gl_PointSize = clamp(size * uPixelRatio * (7.0 / -mv.z), 1.0, 5.0);
 }
 `;
 
@@ -121,11 +123,13 @@ void main() {
   float d = length(uv);
   if (d > 0.5) discard;
 
-  float alpha = smoothstep(0.5, 0.06, d);
+  float alpha = smoothstep(0.5, 0.1, d);
   vec3 color = mix(uColorCore, uColorEdge, clamp(vGlow + vRadius * 2.2, 0.0, 1.0));
-  color += uAudio * 0.35;
+  color += uAudio * 0.18;
 
-  gl_FragColor = vec4(color, alpha * (0.30 + vGlow * 0.75));
+  // Low per-particle alpha is what lets 20k additive sprites read as a shell
+  // with depth rather than a blown-out highlight.
+  gl_FragColor = vec4(color, alpha * (0.085 + vGlow * 0.26 + uAudio * 0.08));
 }
 `;
 
@@ -215,7 +219,9 @@ export default function Orb({
     const resize = () => {
       const { clientWidth: w, clientHeight: h } = mount;
       if (!w || !h) return;
-      renderer.setSize(w, h, false);
+      // updateStyle must stay on: without it the canvas keeps its raw buffer
+      // dimensions (2x at devicePixelRatio 2) and overflows the container.
+      renderer.setSize(w, h, true);
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
     };
