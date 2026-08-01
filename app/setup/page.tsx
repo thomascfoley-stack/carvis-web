@@ -31,10 +31,12 @@ export default function SetupPage() {
     llmProvider: "anthropic",
     llmModel: "",
     llmKey: "",
+    llmBaseUrl: "",
     ttsProvider: "openai",
     ttsVoice: "",
     ttsModel: "",
     ttsKey: "",
+    ttsBaseUrl: "",
   });
 
   const load = () =>
@@ -49,9 +51,11 @@ export default function SetupPage() {
           mcpUrl: d.credentials.mcpUrl ?? "",
           llmProvider: d.credentials.llmProvider ?? "anthropic",
           llmModel: d.credentials.llmModel ?? "",
+          llmBaseUrl: d.credentials.llmBaseUrl ?? "",
           ttsProvider: d.credentials.ttsProvider ?? "openai",
           ttsVoice: d.credentials.ttsVoice ?? "",
           ttsModel: d.credentials.ttsModel ?? "",
+          ttsBaseUrl: d.credentials.ttsBaseUrl ?? "",
         }));
       })
       .catch((e) => setError(String(e)));
@@ -215,7 +219,7 @@ export default function SetupPage() {
       </Link>
       <h1>Setup</h1>
       <p className="sub">
-        JARVIS runs on <strong>your</strong> keys — nothing is billed to anyone else, and there is
+        CARVIS runs on <strong>your</strong> keys — nothing is billed to anyone else, and there is
         no shared default. Keys are encrypted before storage and never sent back to this page.
         Signed in as {data.email}.
       </p>
@@ -226,21 +230,21 @@ export default function SetupPage() {
       )}
       {!data.storage.encryption && (
         <p className="line error">
-          No encryption key set (JARVIS_ENCRYPTION_KEY). Saving is disabled rather than storing
+          No encryption key set (CARVIS_ENCRYPTION_KEY). Saving is disabled rather than storing
           keys in the clear.
         </p>
       )}
       {data.storage.stale && (
         <p className="line error">
           Your keys are still stored, but the server&rsquo;s encryption key has changed since they
-          were saved, so they can no longer be read. Paste them in again below and they will
-          stick. To stop this recurring, set <code>JARVIS_ENCRYPTION_KEY</code> to a fixed value
-          you never rotate — otherwise rotating the Composio key wipes every stored credential.
+          were saved, so they can no longer be read. Paste them in again below — this time they
+          will stay. (Set <code>CARVIS_ENCRYPTION_KEY</code> to a fixed value you never rotate,
+          otherwise rotating the Composio key wipes every stored credential.)
         </p>
       )}
 
       <div className="card">
-        <h2>What should JARVIS call you?</h2>
+        <h2>What should CARVIS call you?</h2>
         <div className="field">
           <label>Leave blank and it will use no name at all — no &ldquo;sir&rdquo;.</label>
           <input
@@ -264,7 +268,7 @@ export default function SetupPage() {
             placeholder="https://mcp.composio.dev/…"
           />
           <span className="note">
-            Every integration JARVIS can reach comes from this endpoint. Your tools, your
+            Every integration CARVIS can reach comes from this endpoint. Your tools, your
             connections, your account.
           </span>
         </div>
@@ -296,275 +300,4 @@ export default function SetupPage() {
         <h2>Model</h2>
         <div className="row">
           <div className="field">
-            <label>Provider</label>
-            <select
-              value={form.llmProvider}
-              onChange={(e) => {
-                const p = data.llmProviders.find((x: any) => x.id === e.target.value);
-                setForm({
-                  ...form,
-                  llmProvider: e.target.value,
-                  llmModel: p?.models?.[0] ?? "",
-                  llmKey: "",
-                });
-              }}
-            >
-              {data.llmProviders.map((p: any) => (
-                <option key={p.id} value={p.id}>
-                  {p.label}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="field">
-            <label>Model</label>
-            {llmP?.models?.length ? (
-              <select
-                value={form.llmModel}
-                onChange={(e) => setForm({ ...form, llmModel: e.target.value })}
-              >
-                {llmP.models.map((m: string) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <input
-                value={form.llmModel}
-                onChange={(e) => setForm({ ...form, llmModel: e.target.value })}
-                placeholder="model id"
-              />
-            )}
-          </div>
-        </div>
-        <div className="field">
-          <label>{keyLabel("API key", c.llmKey)}</label>
-          <input
-            type="password"
-            value={form.llmKey}
-            onChange={(e) => setForm({ ...form, llmKey: e.target.value })}
-            placeholder={
-              llmProviderChanged
-                ? "new provider — paste its key"
-                : c.llmKey.set
-                  ? "leave blank to keep the stored key"
-                  : "paste key"
-            }
-            autoComplete="off"
-          />
-          {llmProviderChanged && c.llmKey.set && !form.llmKey.trim() && (
-            <span className="note err">
-              You changed provider. Saving without a key here clears the old one, because a{" "}
-              {c.llmProvider} key will not work at {llmP?.label ?? form.llmProvider}.
-            </span>
-          )}
-          {llmP?.keyUrl && (
-            <span className="note">
-              Get one at{" "}
-              <a href={llmP.keyUrl} target="_blank" rel="noreferrer">
-                {llmP.keyUrl}
-              </a>
-            </span>
-          )}
-        </div>
-      </div>
-
-      <div className="card">
-        <h2>Voice</h2>
-        <div className="row">
-          <div className="field">
-            <label>Provider</label>
-            <select
-              value={form.ttsProvider}
-              onChange={(e) => {
-                const p = data.ttsProviders.find((x: any) => x.id === e.target.value);
-                setForm({
-                  ...form,
-                  ttsProvider: e.target.value,
-                  ttsVoice: p?.defaultVoice ?? "",
-                  ttsModel: p?.defaultModel ?? "",
-                  ttsKey: "",
-                });
-              }}
-            >
-              {data.ttsProviders.map((p: any) => (
-                <option key={p.id} value={p.id}>
-                  {p.label}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="field">
-            <label>Model</label>
-            {ttsP?.models?.length ? (
-              <select
-                value={form.ttsModel}
-                onChange={(e) => setForm({ ...form, ttsModel: e.target.value })}
-              >
-                {ttsP.models.map((m: string) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <input
-                value={form.ttsModel}
-                onChange={(e) => setForm({ ...form, ttsModel: e.target.value })}
-                placeholder={ttsP?.defaultModel || "default"}
-              />
-            )}
-          </div>
-        </div>
-
-        <div className="field">
-          <label>
-            {ttsP?.voiceLabel ?? "Voice"}
-            {loadingVoices && <span className="note"> loading…</span>}
-            {!loadingVoices && voices.length > 0 && (
-              <span className="note"> {voices.length} available</span>
-            )}
-          </label>
-
-          {voices.length > 0 ? (
-            <>
-              <input
-                value={voiceFilter}
-                onChange={(e) => setVoiceFilter(e.target.value)}
-                placeholder="filter by name, accent or language…"
-              />
-              <select
-                size={Math.min(10, Math.max(4, shownVoices.length))}
-                value={form.ttsVoice}
-                onChange={(e) => setForm({ ...form, ttsVoice: e.target.value })}
-                style={{ marginTop: 8 }}
-              >
-                {/* A saved voice that isn't in the list must stay selectable,
-                    or opening this page would silently change your voice. */}
-                {form.ttsVoice && !voices.some((v) => v.id === form.ttsVoice) && (
-                  <option value={form.ttsVoice}>{form.ttsVoice} (current)</option>
-                )}
-                {shownVoices.map((v) => (
-                  <option key={v.id} value={v.id}>
-                    {v.label}
-                    {v.tag ? ` — ${v.tag}` : ""}
-                  </option>
-                ))}
-              </select>
-              {shownVoices.length < voices.length && (
-                <span className="note">
-                  Showing {shownVoices.length} of {voices.length} — keep typing to narrow it.
-                </span>
-              )}
-            </>
-          ) : (
-            <input
-              value={form.ttsVoice}
-              onChange={(e) => setForm({ ...form, ttsVoice: e.target.value })}
-              placeholder={ttsP?.defaultVoice}
-            />
-          )}
-
-          <div className="row" style={{ marginTop: 10 }}>
-            <button
-              className="btn ghost"
-              onClick={preview}
-              disabled={previewing || !form.ttsVoice || !c.ttsKey.set}
-              title="Speaks one line using the saved key for this provider."
-            >
-              {previewing ? "Playing…" : "▶ Preview"}
-            </button>
-            {ttsP?.listLive && (
-              <button
-                className="btn ghost"
-                onClick={() => loadVoices(form.ttsProvider, true)}
-                disabled={loadingVoices}
-                title="Re-fetch from the provider — use after cloning a new voice."
-              >
-                {loadingVoices ? "Refreshing…" : "↻ Refresh list"}
-              </button>
-            )}
-          </div>
-
-          {previewError && <span className="note err">{previewError}</span>}
-          {voiceMeta?.error && !voices.length && (
-            <span className="note err">Could not list voices: {voiceMeta.error}</span>
-          )}
-          {voiceMeta?.stale && (
-            <span className="note err">
-              Showing a cached list — the provider could not be reached just now.
-            </span>
-          )}
-          {!loadingVoices && !voices.length && !voiceMeta?.error && ttsP?.needsKey && (
-            <span className="note">
-              Save your {ttsP.label} key, then the voices from your account appear here.
-            </span>
-          )}
-
-          {/* The list is a convenience, not a cage: a brand-new voice id may
-              not be in it yet, and typing one has to keep working. */}
-          {voices.length > 0 && (
-            <details style={{ marginTop: 8 }}>
-              <summary className="note">Enter a voice ID directly</summary>
-              <input
-                value={form.ttsVoice}
-                onChange={(e) => setForm({ ...form, ttsVoice: e.target.value })}
-                placeholder={ttsP?.defaultVoice}
-                style={{ marginTop: 6 }}
-              />
-            </details>
-          )}
-        </div>
-
-        {ttsP?.needsKey && (
-          <div className="field">
-            <label>{keyLabel("API key", c.ttsKey)}</label>
-            <input
-              type="password"
-              value={form.ttsKey}
-              onChange={(e) => setForm({ ...form, ttsKey: e.target.value })}
-              placeholder={
-                ttsProviderChanged
-                  ? "new provider — paste its key"
-                  : c.ttsKey.set
-                    ? "leave blank to keep the stored key"
-                    : "paste key"
-              }
-              autoComplete="off"
-            />
-            {ttsProviderChanged && c.ttsKey.set && !form.ttsKey.trim() && (
-              <span className="note err">
-                You changed provider. Saving without a key here clears the old one, because a{" "}
-                {c.ttsProvider} key will not work at {ttsP?.label ?? form.ttsProvider}.
-              </span>
-            )}
-            {ttsP.keyUrl && (
-              <span className="note">
-                Get one at{" "}
-                <a href={ttsP.keyUrl} target="_blank" rel="noreferrer">
-                  {ttsP.keyUrl}
-                </a>
-              </span>
-            )}
-          </div>
-        )}
-        {ttsP?.note && <span className="note">{ttsP.note}</span>}
-      </div>
-
-      <button
-        className="btn"
-        onClick={save}
-        disabled={saving || !data.storage.database || !data.storage.encryption}
-      >
-        {saving ? "Saving…" : "Save"}
-      </button>
-      {saved && <span className="saved">{saved}</span>}
-      {c.onboarded && (
-        <Link href="/" className="saved" style={{ marginLeft: 16 }}>
-          Start talking →
-        </Link>
-      )}
-    </div>
-  );
-}
+      %d�0
