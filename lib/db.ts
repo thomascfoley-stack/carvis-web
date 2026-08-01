@@ -1,4 +1,5 @@
 import { neon } from "@neondatabase/serverless";
+import { redact } from "./redact";
 
 /**
  * Neon Postgres.
@@ -8,8 +9,6 @@ import { neon } from "@neondatabase/serverless";
  * give us: a per-user Composio identity (so one person's Gmail is never
  * readable by another), per-user memory, and usage counters to stop one
  * account running up the whole bill.
- *
- * Uses Neon's HTTP driver so it works on the Edge runtime.
  */
 
 const url =
@@ -32,6 +31,7 @@ let schemaReady: Promise<void> | null = null;
 /**
  * Idempotent, lazily applied once per warm instance. Avoids a separate
  * migration step at the cost of one cheap round trip on a cold start.
+ * Nothing is written until someone actually signs in.
  */
 export function ensureSchema(): Promise<void> {
   if (schemaReady) return schemaReady;
@@ -203,9 +203,9 @@ export async function dbSearchMemories(
 ): Promise<string[]> {
   await ensureSchema();
   const sql = client();
-  // Postgres full-text beats the substring matching the KV fallback used, and
-  // gives us a real ranking. pgvector can slot in here later without changing
-  // any caller.
+  // Postgres full-text beats the substring matching the in-process fallback
+  // used, and gives us a real ranking. pgvector can slot in here later without
+  // changing any caller.
   const rows = (await sql`
     SELECT fact FROM memory
     WHERE email = ${email.toLowerCase()}
@@ -229,14 +229,18 @@ export async function recordFailure(args: {
     await ensureSchema();
     const sql = client();
 
+    // Scrub before persisting: an upstream error can carry a credential, and
+    // this table is read by humans and by the fixer agent.
+    const clean = redact(args.message);
+
     // Strip digits and quoted literals so "user 123 not found" and
     // "user 456 not found" collapse to one fingerprint.
-    const normalized = args.message.replace(/\d+/g, "N").replace(/'[^']*'/g, "'X'").slice(0, 200);
+    const normalized = clean.replace(/\d+/g, "N").replace(/'[^']*'/g, "'X'").slice(0, 200);
     const fingerprint = `${args.node}:${args.errorClass}:${normalized}`.slice(0, 300);
 
     await sql`
       INSERT INTO failures (fingerprint, node, error_class, message, sample_input)
-      VALUES (${fingerprint}, ${args.node}, ${args.errorClass}, ${args.message.slice(0, 2000)},
+      VALUES (${fingerprint}, ${args.node}, ${args.errorClass}, ${clean.slice(0, 2000)},
               ${JSON.stringify(args.input ?? null)}::jsonb)
       ON CONFLICT (fingerprint) DO UPDATE
         SET occurrences = failures.occurrences + 1,
