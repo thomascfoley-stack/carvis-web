@@ -22,6 +22,11 @@ const RULES: [RegExp, string][] = [
   // JWTs / ID tokens.
   [/\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.?[A-Za-z0-9_\-]*/g, "[redacted-jwt]"],
 
+  // "Bearer <token>" / "Token <token>" — must run before the header rule,
+  // which otherwise consumes the word "Bearer" as the value and leaves the
+  // actual token standing.
+  [/\b(bearer|token)\s+[A-Za-z0-9_\-.+/=]{6,}/gi, "$1 [redacted]"],
+
   // Header-ish and field-ish assignments.
   [/(authorization|bearer|x-api-key|api[-_]?key|password|token|secret)\s*[:=]?\s*["']?[A-Za-z0-9_\-.+/=]{6,}["']?/gi, "$1 [redacted]"],
 

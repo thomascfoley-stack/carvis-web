@@ -9,8 +9,12 @@
  * Web Crypto only, so this runs on both runtimes.
  */
 
+// CARVIS_* preferred; the pre-rename JARVIS_* names keep working so a
+// deploy of the rename cannot orphan already-encrypted credentials.
 const MASTER = (
+  process.env.CARVIS_ENCRYPTION_KEY ||
   process.env.JARVIS_ENCRYPTION_KEY ||
+  process.env.CARVIS_AUTH_SECRET ||
   process.env.JARVIS_AUTH_SECRET ||
   process.env.COMPOSIO_API_KEY ||
   ""
