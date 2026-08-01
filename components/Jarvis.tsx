@@ -17,7 +17,7 @@ export default function Jarvis() {
   const [status, setStatus] = useState("");
   const [note, setNote] = useState("");
   const [error, setError] = useState("");
-  const [voiceError, setVoiceError] = useState("");
+  const [voiceError, setVoiceError] = useState<{ msg: string; fellBack: boolean } | null>(null);
   const [listening, setListening] = useState(false);
   const [speaking, setSpeaking] = useState(false);
   const [thinking, setThinking] = useState(false);
@@ -31,12 +31,17 @@ export default function Jarvis() {
    */
   const [muted, setMuted] = useState(false);
 
+  /** Non-empty while a handed-off job is still running in the background. */
+  const [backgroundJob, setBackgroundJob] = useState("");
+
   const speakerRef = useRef<Speaker | null>(null);
   const listenerRef = useRef<Listener | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const turnsRef = useRef<Turn[]>([]);
   const busyRef = useRef(false);
   const mutedRef = useRef(false);
+  const detachedRef = useRef(false);
+  const turnSeq = useRef(0);
 
   turnsRef.current = turns;
   mutedRef.current = muted;
@@ -51,7 +56,7 @@ export default function Jarvis() {
   // with no way to tell whether the model, the network, or a key is at fault.
   useEffect(() => {
     const speaker = speakerRef.current;
-    if (speaker) speaker.onError = (m) => setVoiceError(m);
+    if (speaker) speaker.onError = (msg, fellBack) => setVoiceError({ msg, fellBack });
   }, []);
 
   useEffect(() => {
@@ -79,8 +84,11 @@ export default function Jarvis() {
     const clean = text.trim();
     if (!clean || busyRef.current) return;
 
+    const myTurn = ++turnSeq.current;
     busyRef.current = true;
+    detachedRef.current = false;
     setError("");
+    setVoiceError(null);
     setNote("");
     setInterim("");
     setPartial("");
@@ -148,6 +156,25 @@ export default function Jarvis() {
             setThinking(false);
             // The moment a sentence is complete, start speaking it.
             for (const chunk of splitter.push(ev.v)) speaker?.enqueue(chunk);
+          } else if (ev.t === "say") {
+            // Progress spoken aloud. Deliberately not added to the transcript:
+            // it is JARVIS talking about the work, not answering.
+            speaker?.enqueue(String(ev.v), true);
+          } else if (ev.t === "detach") {
+            // The job is slow, so hand control back rather than hold the user
+            // hostage. This request keeps running on its own connection — it
+            // is no longer abortRef.current, so neither Stop nor the next
+            // thing they say can kill it.
+            detachedRef.current = true;
+            abortRef.current = null;
+            busyRef.current = false;
+            setThinking(false);
+            setStatus("");
+            setBackgroundJob(ev.v?.label ?? "Working");
+            if (ev.v?.say) speaker?.enqueue(String(ev.v.say), true);
+          } else if (ev.t === "resumed") {
+            setBackgroundJob("");
+            if (ev.v?.say) speaker?.enqueue(String(ev.v.say), true);
           } else if (ev.t === "status") {
             setStatus(ev.v);
             if (ev.v) setThinking(true);
@@ -164,15 +191,20 @@ export default function Jarvis() {
     } catch (e: any) {
       if (e?.name !== "AbortError") setError(String(e?.message ?? e));
     } finally {
-      setThinking(false);
-      setStatus("");
-      abortRef.current = null;
-      busyRef.current = false;
+      // A detached turn can finish *after* the user has started another one.
+      // Only the turn that still owns the UI is allowed to reset it.
+      if (turnSeq.current === myTurn) {
+        setThinking(false);
+        setStatus("");
+        abortRef.current = null;
+        busyRef.current = false;
+        setPartial("");
+      }
+      setBackgroundJob("");
 
       if (assistant.trim()) {
         setTurns((prev) => [...prev, { role: "assistant", text: assistant.trim() }]);
       }
-      setPartial("");
     }
   }, []);
 
@@ -213,7 +245,6 @@ export default function Jarvis() {
 
   const beginSession = useCallback(() => {
     speakerRef.current?.unlock();
-    // Frequency data only — nothing recorded, nothing leaves the browser.
     void startMicAnalyser();
     setStarted(true);
 
@@ -285,7 +316,10 @@ export default function Jarvis() {
       <section className="readout">
         {error && <p className="line error">{error}</p>}
         {voiceError && (
-          <p className="line error">Voice: {voiceError} — using the on-device voice instead.</p>
+          <p className="line error">
+            Voice: {voiceError.msg}
+            {voiceError.fellBack ? " — using the on-device voice instead." : ""}
+          </p>
         )}
         {note && <p className="line muted">{note}</p>}
 
@@ -296,6 +330,11 @@ export default function Jarvis() {
         {started && !supported && (
           <p className="line muted">
             This browser has no speech recognition — use Chrome for voice, or type below.
+          </p>
+        )}
+        {backgroundJob && (
+          <p className="line hint">
+            {backgroundJob} — still running in the background. Ask me something else meanwhile.
           </p>
         )}
         {muted && <p className="line hint">Microphone muted — JARVIS can’t hear you</p>}
@@ -309,7 +348,7 @@ export default function Jarvis() {
             aria-pressed={muted}
             title="Mutes your microphone. Does not stop JARVIS speaking."
           >
-            <span className="glyph">{muted ? "🔇" : "🎙"}</span>
+            <span className="glyph">{muted ? "\u{1F507}" : "\u{1F399}"}</span>
             <span className="label">{muted ? "Unmute me" : "Mute me"}</span>
           </button>
 
@@ -332,7 +371,6 @@ export default function Jarvis() {
           const text = typed;
           setTyped("");
           speakerRef.current?.unlock();
-          void startMicAnalyser();
           setStarted(true);
           void send(text);
         }}
