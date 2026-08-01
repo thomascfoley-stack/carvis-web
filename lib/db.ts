@@ -4,9 +4,13 @@ import { redact } from "./redact";
 /**
  * Neon Postgres.
  *
- * Multi-tenant essentials that environment variables cannot provide: a
- * per-user Composio identity, per-user memory, per-user preferences, and
- * per-user credentials (encrypted — see crypto.ts).
+ * This exists because the app is multi-tenant. With a single user, environment
+ * variables were enough. With open signup we need three things env vars cannot
+ * give us: a per-user Composio identity (so one person's Gmail is never
+ * readable by another), per-user memory, and usage counters to stop one
+ * account running up the whole bill.
+ *
+ * Uses Neon's HTTP driver so it works on the Edge runtime.
  */
 
 const url =
@@ -72,12 +76,25 @@ export function ensureSchema(): Promise<void> {
         updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
       )`;
 
-    // Secret columns hold AES-GCM ciphertext, never plaintext.
+    // Per-user credentials. Secret columns hold AES-GCM ciphertext, never
+    // plaintext — see lib/crypto.ts.
     await sql`
       CREATE TABLE IF NOT EXISTS user_credentials (
         email       TEXT PRIMARY KEY,
         creds       JSONB NOT NULL DEFAULT '{}'::jsonb,
         updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+      )`;
+
+    // Voice libraries fetched from each provider with the user's own key.
+    // Cached because it's a slow third-party round trip on a page people open
+    // to change one field, and because a cloned-voice library is stable.
+    await sql`
+      CREATE TABLE IF NOT EXISTS voice_cache (
+        email       TEXT NOT NULL,
+        provider    TEXT NOT NULL,
+        voices      JSONB NOT NULL DEFAULT '[]'::jsonb,
+        fetched_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (email, provider)
       )`;
 
     // Failure capture for the fixer agent. Fingerprinted so one broken
@@ -96,6 +113,7 @@ export function ensureSchema(): Promise<void> {
       )`;
     await sql`CREATE INDEX IF NOT EXISTS failures_status_idx ON failures (status, last_seen DESC)`;
   })().catch((e) => {
+    // Let the next request retry rather than wedging a bad promise forever.
     schemaReady = null;
     throw e;
   });
@@ -122,6 +140,7 @@ export async function findUser(email: string): Promise<UserRow | null> {
   return rows[0] ?? null;
 }
 
+/** Called on every successful login. Creates the row the first time. */
 export async function upsertUser(email: string, composioUserId: string): Promise<UserRow> {
   await ensureSchema();
   const sql = client();
@@ -132,6 +151,50 @@ export async function upsertUser(email: string, composioUserId: string): Promise
     RETURNING email, composio_user_id, status, daily_limit
   `) as unknown as UserRow[];
   return rows[0];
+}
+
+/* ------------------------------- quotas ------------------------------- */
+
+export type Quota = { allowed: boolean; used: number; limit: number };
+
+/**
+ * Atomically increments today's counter and reports whether the caller is
+ * still under their cap. Counting before the work happens is deliberate: it
+ * fails closed if the model call later errors, which is the safer direction
+ * when someone else's key is paying.
+ */
+export async function consumeMessage(email: string, limit: number): Promise<Quota> {
+  await ensureSchema();
+  const sql = client();
+  const rows = (await sql`
+    INSERT INTO usage_daily (email, day, messages)
+    VALUES (${email.toLowerCase()}, CURRENT_DATE, 1)
+    ON CONFLICT (email, day) DO UPDATE SET messages = usage_daily.messages + 1
+    RETURNING messages
+  `) as unknown as { messages: number }[];
+
+  const used = rows[0]?.messages ?? 0;
+  return { allowed: used <= limit, used, limit };
+}
+
+export async function addTtsChars(email: string, chars: number): Promise<void> {
+  await ensureSchema();
+  const sql = client();
+  await sql`
+    INSERT INTO usage_daily (email, day, tts_chars)
+    VALUES (${email.toLowerCase()}, CURRENT_DATE, ${chars})
+    ON CONFLICT (email, day) DO UPDATE SET tts_chars = usage_daily.tts_chars + ${chars}
+  `;
+}
+
+export async function todayUsage(email: string): Promise<{ messages: number; tts_chars: number }> {
+  await ensureSchema();
+  const sql = client();
+  const rows = (await sql`
+    SELECT messages, tts_chars FROM usage_daily
+    WHERE email = ${email.toLowerCase()} AND day = CURRENT_DATE
+  `) as unknown as { messages: number; tts_chars: number }[];
+  return rows[0] ?? { messages: 0, tts_chars: 0 };
 }
 
 /* ------------------------------- memory ------------------------------- */
@@ -162,8 +225,9 @@ export async function dbSearchMemories(
 ): Promise<string[]> {
   await ensureSchema();
   const sql = client();
-  // Postgres full-text gives a real ranking. pgvector can slot in here later
-  // without changing any caller.
+  // Postgres full-text beats the substring matching the KV fallback used, and
+  // gives us a real ranking. pgvector can slot in here later without changing
+  // any caller.
   const rows = (await sql`
     SELECT fact FROM memory
     WHERE email = ${email.toLowerCase()}
@@ -216,6 +280,37 @@ export async function dbSaveCredentials(email: string, creds: unknown): Promise<
   `;
 }
 
+/* ---------------------------- voice cache ----------------------------- */
+
+export async function dbLoadVoices(
+  email: string,
+  provider: string,
+): Promise<{ voices: unknown; fetchedAt: string } | null> {
+  await ensureSchema();
+  const sql = client();
+  const rows = (await sql`
+    SELECT voices, fetched_at FROM voice_cache
+    WHERE email = ${email.toLowerCase()} AND provider = ${provider}
+  `) as unknown as { voices: unknown; fetched_at: string }[];
+  const row = rows[0];
+  return row ? { voices: row.voices, fetchedAt: String(row.fetched_at) } : null;
+}
+
+export async function dbSaveVoices(
+  email: string,
+  provider: string,
+  voices: unknown,
+): Promise<void> {
+  await ensureSchema();
+  const sql = client();
+  await sql`
+    INSERT INTO voice_cache (email, provider, voices, fetched_at)
+    VALUES (${email.toLowerCase()}, ${provider}, ${JSON.stringify(voices)}::jsonb, now())
+    ON CONFLICT (email, provider) DO UPDATE
+      SET voices = EXCLUDED.voices, fetched_at = now()
+  `;
+}
+
 /* ------------------------------ failures ------------------------------ */
 
 export async function recordFailure(args: {
@@ -229,12 +324,9 @@ export async function recordFailure(args: {
     await ensureSchema();
     const sql = client();
 
-    // Scrub before persisting: an upstream error can carry a credential, and
-    // this table is read by humans and by the fixer agent.
-    const clean = redact(args.message);
-
     // Strip digits and quoted literals so "user 123 not found" and
     // "user 456 not found" collapse to one fingerprint.
+    const clean = redact(args.message);
     const normalized = clean.replace(/\d+/g, "N").replace(/'[^']*'/g, "'X'").slice(0, 200);
     const fingerprint = `${args.node}:${args.errorClass}:${normalized}`.slice(0, 300);
 
