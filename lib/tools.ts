@@ -1,4 +1,5 @@
 import type { Credentials } from "./credentials";
+import { defineNode } from "./graph";
 import { callTool, listTools } from "./mcp";
 import { saveMemory, searchMemories } from "./memory";
 import { savePrefs } from "./prefs";
@@ -164,7 +165,7 @@ export type ToolContext = {
   signal?: AbortSignal;
 };
 
-export async function runTool(
+async function runToolBody(
   name: string,
   input: Record<string, any>,
   ctx: ToolContext,
@@ -209,6 +210,55 @@ export async function runTool(
     return `Tool error: ${redact(e).slice(0, 200)}`;
   }
 }
+
+/**
+ * Tool arguments are the user's own prose — a drafted email body, a memory —
+ * and the failures table is cross-tenant. The reproduction therefore records
+ * the *shape* of every argument, never its value: which keys, which types,
+ * what sizes. That reproduces schema and payload-size defects, which is what
+ * tool failures actually are, without archiving anyone's words.
+ */
+function argShapes(input: Record<string, any>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(input ?? {})
+      .slice(0, 20)
+      .map(([k, v]) => [
+        k,
+        typeof v === "string"
+          ? `string(${v.length})`
+          : Array.isArray(v)
+            ? `array(${v.length})`
+            : v === null
+              ? "null"
+              : typeof v,
+      ]),
+  );
+}
+
+/**
+ * A failed tool answers with a sentence rather than throwing — the model needs
+ * something to read — so failure here is a soft check on the output. "That
+ * needs an MCP endpoint" is deliberately absent: no endpoint connected is the
+ * user's configuration, not a defect.
+ */
+const toolNode = defineNode<
+  { name: string; input: Record<string, any>; ctx: ToolContext },
+  string
+>({
+  id: (a) => `tool.${a.name.slice(0, 64)}`,
+  run: (a) => runToolBody(a.name, a.input, a.ctx),
+  soft: (out) =>
+    /^(That failed|Tool error)/.test(out)
+      ? { class: "ToolFailed", message: out.slice(0, 500) }
+      : null,
+  sample: (a) => argShapes(a.input),
+});
+
+export const runTool = (
+  name: string,
+  input: Record<string, any>,
+  ctx: ToolContext,
+): Promise<string> => toolNode({ name, input, ctx }, { signal: ctx.signal });
 
 /**
  * Tool output goes straight into the model's context, so it has to be small.
