@@ -1,3 +1,4 @@
+import { sessionFromRequest } from "@/lib/auth";
 import { CATEGORIES, categoryIndex } from "@/lib/catalog";
 import { composioEnabled, listConnections, listToolkits } from "@/lib/composio";
 
@@ -11,7 +12,10 @@ export const dynamic = "force-dynamic";
  * didn't categorise still ships to the client so the search box can reach all
  * 500-odd toolkits. Slugs we guessed wrong simply don't appear.
  */
-export async function GET() {
+export async function GET(req: Request) {
+  const session = await sessionFromRequest(req);
+  if (!session) return Response.json({ error: "Not signed in." }, { status: 401 });
+
   if (!composioEnabled()) {
     return Response.json({
       enabled: false,
@@ -22,7 +26,10 @@ export async function GET() {
     });
   }
 
-  const [toolkitsRes, connectionsRes] = await Promise.all([listToolkits(), listConnections()]);
+  const [toolkitsRes, connectionsRes] = await Promise.all([
+    listToolkits(),
+    listConnections(session.cid),
+  ]);
 
   if (!toolkitsRes.ok) {
     return Response.json(

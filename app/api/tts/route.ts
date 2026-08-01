@@ -1,3 +1,5 @@
+import { sessionFromRequest } from "@/lib/auth";
+import { addTtsChars, dbEnabled } from "@/lib/db";
 import { synthesize } from "@/lib/providers/tts";
 import { getSettings } from "@/lib/store";
 
@@ -12,6 +14,9 @@ export const dynamic = "force-dynamic";
  * Keeping provider keys server-side is the other reason this exists.
  */
 export async function POST(req: Request) {
+  const session = await sessionFromRequest(req);
+  if (!session) return Response.json({ error: "Not signed in." }, { status: 401 });
+
   let body: any;
   try {
     body = await req.json();
@@ -21,6 +26,12 @@ export async function POST(req: Request) {
 
   const text = String(body?.text ?? "").trim().slice(0, 1500);
   if (!text) return new Response("No text", { status: 400 });
+
+  // Metered but not blocked: cutting audio mid-reply is a worse failure than
+  // a slightly over-quota day, and the message cap already bounds the volume.
+  if (dbEnabled()) {
+    void addTtsChars(session.email, text.length).catch(() => undefined);
+  }
 
   const settings = await getSettings();
   const result = await synthesize(text, settings.tts, req.signal);
