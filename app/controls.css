@@ -14,6 +14,14 @@
   margin: -24px 0 -12px;
 }
 
+/* Anyone who has asked the OS for less motion gets a near-still scene; the
+   canvas itself also reads this preference and stops rotating. */
+@media (prefers-reduced-motion: reduce) {
+  .line {
+    animation: none;
+  }
+}
+
 /* ------------------------------ controls ----------------------------- */
 /* Deliberately large: these are reached for mid-conversation, often without
    looking, and sometimes urgently. */
