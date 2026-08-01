@@ -1,9 +1,9 @@
 /**
- * Redis-over-HTTP helper.
+ * Redis-over-HTTP helper, plus the provider setting shapes.
  *
  * Provider settings used to live here globally. They are now per-user (see
  * credentials.ts and prefs.ts, both backed by Neon), so all that remains is
- * the optional KV client the in-process memory fallback can use.
+ * the optional KV client and the types the provider engines take.
  */
 
 const KV_URL = (process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL || "").trim();
@@ -24,3 +24,18 @@ export async function redis(command: unknown[]): Promise<any> {
 }
 
 export type { Prefs } from "./prefs";
+
+export type LlmSettings = {
+  providerId: string;
+  model: string;
+  baseUrl?: string;
+  apiKey?: string;
+};
+
+export type TtsSettings = {
+  providerId: string;
+  voiceId: string;
+  model?: string;
+  baseUrl?: string;
+  apiKey?: string;
+};
