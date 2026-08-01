@@ -1,9 +1,8 @@
 /**
  * Sessions and access gates.
  *
- * Identity comes from Google (see lib/google.ts). This module signs the
- * session and CSRF cookies with Web Crypto so everything runs on the Edge
- * runtime, and therefore in middleware.
+ * Identity is established by Composio's Google OAuth broker (see
+ * app/api/auth/*). This module signs the session and state cookies.
  */
 
 export const SESSION_COOKIE = "jarvis_session";
@@ -59,7 +58,6 @@ export function domainAllowed(email: string): boolean {
 function secret(): string {
   return (
     env("JARVIS_AUTH_SECRET") ||
-    env("GOOGLE_CLIENT_SECRET") ||
     env("COMPOSIO_API_KEY") ||
     "jarvis-insecure-development-secret"
   );
@@ -156,18 +154,18 @@ export const sessionFromRequest = (req: Request) =>
 /* -------------------------- oauth state token ------------------------- */
 
 /**
- * CSRF nonce for the Google round trip. Signed and stored in a cookie, and
- * echoed back via Google's `state` parameter — both must match, so /callback
- * cannot be driven by a request we did not start.
+ * Carries the freshly minted Composio user id through the OAuth round trip.
+ * Signed, so /callback cannot be driven with an id we did not issue.
  */
-export const createState = (nonce: string) => mint({ n: nonce }, STATE_MAX_AGE);
+export const createState = (connectedAccountId: string, composioUserId: string) =>
+  mint({ caid: connectedAccountId, cid: composioUserId }, STATE_MAX_AGE);
 
-export async function readState(token: string | undefined): Promise<{ nonce: string } | null> {
-  const data = await open<{ n?: string }>(token);
-  return data?.n ? { nonce: data.n } : null;
+export async function readState(
+  token: string | undefined,
+): Promise<{ caid: string; cid: string } | null> {
+  const data = await open<{ caid?: string; cid?: string }>(token);
+  return data?.caid && data?.cid ? { caid: data.caid, cid: data.cid } : null;
 }
-
-export const newNonce = () => crypto.randomUUID().replace(/-/g, "");
 
 /** Opaque per-user Composio identity. Never derived from the email. */
 export function newComposioUserId(): string {

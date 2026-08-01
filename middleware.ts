@@ -1,29 +1,29 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { SESSION_COOKIE, authConfigured, verifySession } from "@/lib/auth";
+import { SESSION_COOKIE } from "@/lib/auth";
 
 /**
- * Gate everything. This covers /api/chat and /api/tts too, so nobody can burn
- * your model or voice credits by calling the endpoints directly.
+ * Redirect-only gate.
+ *
+ * Middleware runs on the Edge runtime, where Next inlines `process.env` at
+ * build time — and Vercel does not expose "Sensitive" env vars to the build.
+ * That means the HMAC secret here could differ from the one the Node-runtime
+ * routes use, and every valid session would be rejected.
+ *
+ * So middleware does not verify signatures. It only checks that a session
+ * cookie is *present*, purely so signed-out visitors land on /login instead of
+ * a blank app shell. Real cryptographic verification happens in every API
+ * route via sessionFromRequest(), which is where authorisation actually
+ * matters — the shell renders no data on its own.
  */
-export async function middleware(req: NextRequest) {
+export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
-  const open = pathname === "/login" || pathname.startsWith("/api/auth/");
-  if (open) return NextResponse.next();
-
-  // Before an allowlist exists the app stays reachable, otherwise a fresh
-  // deploy would lock you out of the page that configures it.
-  if (!authConfigured()) return NextResponse.next();
-
-  if (await verifySession(req.cookies.get(SESSION_COOKIE)?.value)) {
+  if (pathname === "/login" || pathname.startsWith("/api/")) {
     return NextResponse.next();
   }
 
-  if (pathname.startsWith("/api/")) {
-    return new NextResponse(JSON.stringify({ error: "Unauthorized" }), {
-      status: 401,
-      headers: { "content-type": "application/json" },
-    });
+  if (req.cookies.get(SESSION_COOKIE)?.value) {
+    return NextResponse.next();
   }
 
   const url = req.nextUrl.clone();
