@@ -1,19 +1,18 @@
 import { sessionFromRequest } from "@/lib/auth";
-import { composioEnabled } from "@/lib/composio";
-import { consumeMessage, dbEnabled, findUser, recordFailure } from "@/lib/db";
+import { loadCredentials } from "@/lib/credentials";
+import { recordFailure } from "@/lib/db";
 import { loadMemories } from "@/lib/memory";
+import { loadPrefs } from "@/lib/prefs";
 import { systemPrompt } from "@/lib/prompt";
 import { streamLLM, type CanonMsg, type ToolCall } from "@/lib/providers/llm";
 import { redact } from "@/lib/redact";
-import { getSettings } from "@/lib/store";
-import { runTool, toolCatalogue, toolLabel } from "@/lib/tools";
+import { buildCatalogue, runTool, toolLabel } from "@/lib/tools";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const MAX_TOOL_ROUNDS = 4;
 const MAX_HISTORY = 16;
-const DEFAULT_DAILY_LIMIT = 50;
 
 const encoder = new TextEncoder();
 /** One JSON object per line, so the browser can act on each token as it lands. */
@@ -33,8 +32,6 @@ export async function POST(req: Request) {
   const tz: string = typeof body?.tz === "string" && body.tz ? body.tz : "UTC";
   const now: string | undefined = typeof body?.now === "string" ? body.now : undefined;
 
-  // The client sends canonical messages; assistant turns may have been
-  // truncated to what was actually heard before an interruption.
   const history: CanonMsg[] = Array.isArray(body?.messages)
     ? body.messages
         .filter(
@@ -48,49 +45,28 @@ export async function POST(req: Request) {
 
   if (!history.length) return new Response("No messages", { status: 400 });
 
-  // Quota. The owner's keys pay for everyone, so this is the only thing
-  // between one enthusiastic user and a surprising invoice.
-  if (dbEnabled()) {
-    try {
-      const user = await findUser(session.email);
-      if (user?.status && user.status !== "active") {
-        return Response.json({ error: "This account is suspended." }, { status: 403 });
-      }
-      const limit = user?.daily_limit ?? DEFAULT_DAILY_LIMIT;
-      const quota = await consumeMessage(session.email, limit);
-      if (!quota.allowed) {
-        return Response.json(
-          { error: `Daily limit reached (${quota.limit} messages). Resets at midnight UTC.` },
-          { status: 429 },
-        );
-      }
-    } catch (e) {
-      // A quota backend outage shouldn't take the app down, but it is worth
-      // recording — an un-metered window is exactly when bills happen.
-      void recordFailure({
-        node: "chat.quota",
-        errorClass: "QuotaCheckFailed",
-        message: redact(e).slice(0, 500),
-      });
-    }
-  }
-
-  const settings = await getSettings();
-  if (!settings.llm.apiKey) {
+  // Bring-your-own-key: every call is billed to the caller's own account, so
+  // there is no owner default to fall back to and no quota to enforce.
+  const creds = await loadCredentials(session.email);
+  if (!creds.llmKey) {
     return Response.json(
-      { error: "No model API key configured. Add one in Settings." },
-      { status: 503 },
+      { error: "No model key yet. Add yours in Setup.", needsOnboarding: true },
+      { status: 428 },
     );
   }
 
-  const memories = await loadMemories(session.email);
-  const tools = toolCatalogue();
+  const [memories, prefs, catalogue] = await Promise.all([
+    loadMemories(session.email),
+    loadPrefs(session.email),
+    buildCatalogue(creds, req.signal),
+  ]);
+
   const system = systemPrompt({
     memories,
-    prefs: settings.prefs,
+    prefs,
     now,
     timezone: tz,
-    toolsAvailable: composioEnabled(),
+    toolsAvailable: catalogue.tools.length > 3,
   });
 
   const stream = new ReadableStream<Uint8Array>({
@@ -105,6 +81,10 @@ export async function POST(req: Request) {
         }
       };
 
+      // Never silently drop capability: if the MCP endpoint is down or the
+      // tool list was capped, the user should know why JARVIS seems limited.
+      if (catalogue.note) send({ t: "note", v: catalogue.note });
+
       const messages: CanonMsg[] = [...history];
 
       try {
@@ -114,10 +94,14 @@ export async function POST(req: Request) {
           let failed = false;
 
           for await (const ev of streamLLM({
-            settings: settings.llm,
+            settings: {
+              providerId: creds.llmProvider,
+              model: creds.llmModel,
+              apiKey: creds.llmKey,
+            },
             system,
             messages,
-            tools,
+            tools: catalogue.tools,
             signal: req.signal,
           })) {
             if (ev.type === "text") {
@@ -126,14 +110,13 @@ export async function POST(req: Request) {
             } else if (ev.type === "tool_calls") {
               calls = ev.calls;
             } else if (ev.type === "error") {
-              // Everything on this channel is displayed in the browser.
               send({ t: "error", v: redact(ev.message) });
               failed = true;
               void recordFailure({
-                node: `llm.${settings.llm.providerId}`,
+                node: `llm.${creds.llmProvider}`,
                 errorClass: "ModelStreamError",
                 message: ev.message,
-                input: { model: settings.llm.model },
+                input: { model: creds.llmModel },
               });
             }
           }
@@ -144,20 +127,15 @@ export async function POST(req: Request) {
 
           const results = await Promise.all(
             calls.map(async (c) => {
-              const raw = await runTool(c.name, c.input ?? {}, {
-                tz,
-                email: session.email,
-                cid: session.cid,
-                signal: req.signal,
-              });
-              const content = redact(raw);
-              // Tool failures come back as prose so the model can explain
-              // them, which means this is the only place to notice them.
-              if (
-                /^(Calendar unavailable|Mail unavailable|Search failed|That failed|Could not create|Tool error)/.test(
-                  content,
-                )
-              ) {
+              const content = redact(
+                await runTool(c.name, c.input ?? {}, {
+                  tz,
+                  email: session.email,
+                  creds,
+                  signal: req.signal,
+                }),
+              );
+              if (/^(That failed|Tool error|That needs an MCP)/.test(content)) {
                 void recordFailure({
                   node: `tool.${c.name}`,
                   errorClass: "ToolFailed",

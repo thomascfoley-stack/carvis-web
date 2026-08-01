@@ -1,0 +1,72 @@
+/* Additions layered over globals.css. */
+
+/* Belt and braces: the WebGL canvas must never exceed its wrapper. */
+.orb-canvas { overflow: hidden; }
+.orb-canvas canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* ------------------------------ controls ----------------------------- */
+/* Deliberately large: these are reached for mid-conversation, often without
+   looking, and sometimes urgently. */
+
+.controls {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  width: min(44rem, 100%);
+  margin: 4px auto 0;
+}
+
+.control {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  flex: 1;
+  min-height: 62px;
+  padding: 14px 22px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: rgba(8, 14, 28, 0.6);
+  cursor: pointer;
+  transition: background 0.18s, border-color 0.18s, opacity 0.18s;
+}
+.control:hover:not(:disabled) {
+  border-color: rgba(111, 232, 255, 0.45);
+  background: rgba(12, 20, 38, 0.8);
+}
+.control:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.control .glyph {
+  font-size: 20px;
+  line-height: 1;
+}
+.control .label {
+  font-size: 15px;
+  letter-spacing: 0.06em;
+}
+
+/* Muted is a state you must be able to see at a glance — forgetting you're
+   muted and talking to nothing is the failure mode worth designing against. */
+.control.mute.on {
+  background: rgba(255, 176, 76, 0.16);
+  border-color: rgba(255, 176, 76, 0.55);
+  color: #ffca7a;
+}
+
+.control.stop:hover:not(:disabled) {
+  background: rgba(255, 122, 122, 0.18);
+  border-color: rgba(255, 122, 122, 0.5);
+}
+
+@media (max-width: 520px) {
+  .control .label {
+    font-size: 14px;
+  }
+}
