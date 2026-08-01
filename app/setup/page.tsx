@@ -14,6 +14,12 @@ export default function SetupPage() {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<any>(null);
 
+  // iOS renders a size>1 <select> as a cramped unstyled inline list; the
+  // native wheel picker (a plain select) is far better there. Desktop keeps
+  // the listbox, which is better for scanning long voice lists.
+  const coarse =
+    typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches;
+
   // The voice catalogue for the currently selected provider.
   const [voices, setVoices] = useState<Voice[]>([]);
   const [voiceMeta, setVoiceMeta] = useState<any>(null);
@@ -266,6 +272,10 @@ export default function SetupPage() {
             value={form.mcpUrl}
             onChange={(e) => setForm({ ...form, mcpUrl: e.target.value })}
             placeholder="https://mcp.composio.dev/…"
+            inputMode="url"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
           />
           <span className="note">
             Every integration CARVIS can reach comes from this endpoint. Your tools, your
@@ -338,6 +348,9 @@ export default function SetupPage() {
                 value={form.llmModel}
                 onChange={(e) => setForm({ ...form, llmModel: e.target.value })}
                 placeholder="model id"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
               />
             )}
           </div>
@@ -349,6 +362,10 @@ export default function SetupPage() {
               value={form.llmBaseUrl}
               onChange={(e) => setForm({ ...form, llmBaseUrl: e.target.value })}
               placeholder="https://your-endpoint.example/v1"
+              inputMode="url"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
             />
             <span className="note">https only — the key travels with every request.</span>
           </div>
@@ -445,12 +462,17 @@ export default function SetupPage() {
           {voices.length > 0 ? (
             <>
               <input
+                type="search"
                 value={voiceFilter}
                 onChange={(e) => setVoiceFilter(e.target.value)}
                 placeholder="filter by name, accent or language…"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                enterKeyHint="search"
               />
               <select
-                size={Math.min(10, Math.max(4, shownVoices.length))}
+                size={coarse ? undefined : Math.min(10, Math.max(4, shownVoices.length))}
                 value={form.ttsVoice}
                 onChange={(e) => setForm({ ...form, ttsVoice: e.target.value })}
                 style={{ marginTop: 8 }}
@@ -538,6 +560,10 @@ export default function SetupPage() {
               value={form.ttsBaseUrl}
               onChange={(e) => setForm({ ...form, ttsBaseUrl: e.target.value })}
               placeholder="https://your-endpoint.example/v1"
+              inputMode="url"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
             />
             <span className="note">https only — the key travels with every request.</span>
           </div>
