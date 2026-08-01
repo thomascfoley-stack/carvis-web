@@ -20,6 +20,19 @@ export const composioEnabled = () => !!apiKey();
 
 export type Result<T> = { ok: true; data: T } | { ok: false; error: string };
 
+/**
+ * Strip anything key-shaped out of an error before it can reach a URL, a log,
+ * or a browser. Upstream services echo the offending credential back in
+ * validation errors ("Invalid API key: sk-...owAA"), and our error strings end
+ * up in /login?error=, which is exactly where secrets must never appear.
+ */
+export function redact(message: string): string {
+  return message
+    .replace(/\b(sk|ak|pk|rk|xi|key)[-_][A-Za-z0-9_\-*]{6,}/gi, "$1_[redacted]")
+    .replace(/\b[A-Za-z0-9_\-]{40,}\b/g, "[redacted]")
+    .replace(/(Bearer|api[-_]?key["'\s:=]+)\s*\S+/gi, "$1 [redacted]");
+}
+
 async function call<T = any>(
   path: string,
   init?: { method?: string; body?: unknown; signal?: AbortSignal },
@@ -36,7 +49,7 @@ async function call<T = any>(
       cache: "no-store",
     });
   } catch (e) {
-    return { ok: false, error: `Network error reaching Composio: ${String(e).slice(0, 160)}` };
+    return { ok: false, error: `Network error reaching Composio: ${redact(String(e)).slice(0, 160)}` };
   }
 
   const text = await res.text();
@@ -50,7 +63,7 @@ async function call<T = any>(
   if (!res.ok) {
     const msg =
       (body && (body.error?.message || body.error || body.message)) || `HTTP ${res.status}`;
-    return { ok: false, error: String(msg).slice(0, 300) };
+    return { ok: false, error: redact(String(msg)).slice(0, 300) };
   }
   return { ok: true, data: body as T };
 }
@@ -75,7 +88,7 @@ export async function composioExecute(
   const body: any = res.data;
   if (body && typeof body === "object" && "successful" in body) {
     if (body.successful === false) {
-      return { ok: false, error: String(body.error ?? "Tool reported failure").slice(0, 300) };
+      return { ok: false, error: redact(String(body.error ?? "Tool reported failure")).slice(0, 300) };
     }
     return { ok: true, data: body.data ?? body };
   }
