@@ -8,6 +8,12 @@
   height: 100% !important;
 }
 
+/* The cloud is the interface, not decoration — let it dominate. */
+.orb-wrap {
+  min-height: min(72vh, 720px);
+  margin: -24px 0 -12px;
+}
+
 /* ------------------------------ controls ----------------------------- */
 /* Deliberately large: these are reached for mid-conversation, often without
    looking, and sometimes urgently. */
