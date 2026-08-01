@@ -36,6 +36,9 @@ export class Speaker {
   /** Set when the server tells us to use the on-device voice instead. */
   private useBrowserVoice = false;
 
+  /** Surfaced to the UI. A silent failure is the worst possible outcome here. */
+  onError: (message: string) => void = () => {};
+
   /** Must be called from a user gesture — browsers block audio otherwise. */
   unlock(): void {
     if (!this.ctx) {
@@ -135,12 +138,36 @@ export class Speaker {
           this.speakOnDevice(clean);
           return null;
         }
-        if (!res.ok) return null;
+
+        if (!res.ok) {
+          // Falling silent is the worst outcome: the user sees text appear and
+          // hears nothing, with no clue why. Report it, then keep talking using
+          // the on-device voice so the conversation still works.
+          const detail = await res
+            .json()
+            .then((d) => d?.error ?? `voice provider error ${res.status}`)
+            .catch(() => `voice provider error ${res.status}`);
+          this.onError(String(detail));
+          this.useBrowserVoice = true;
+          this.speakOnDevice(clean);
+          return null;
+        }
 
         const bytes = await res.arrayBuffer();
         if (gen !== this.generation || !this.ctx) return null;
-        return await this.ctx.decodeAudioData(bytes);
-      } catch {
+
+        try {
+          return await this.ctx.decodeAudioData(bytes);
+        } catch {
+          // Provider returned 200 but not decodable audio (an HTML error page,
+          // or a format this browser can't handle).
+          this.onError("The voice provider returned audio this browser can't play.");
+          this.useBrowserVoice = true;
+          this.speakOnDevice(clean);
+          return null;
+        }
+      } catch (e) {
+        this.onError(`Could not reach the voice service: ${String(e).slice(0, 120)}`);
         return null;
       } finally {
         this.controllers = this.controllers.filter((c) => c !== ac);
