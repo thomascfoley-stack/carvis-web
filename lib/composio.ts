@@ -9,8 +9,14 @@
 const BASE = "https://backend.composio.dev/api/v3";
 
 const apiKey = () => (process.env.COMPOSIO_API_KEY || "").trim();
-export const composioUserId = () => (process.env.COMPOSIO_USER_ID || "").trim() || "default";
 export const composioEnabled = () => !!apiKey();
+
+/**
+ * Every function below takes an explicit `userId`. There is deliberately no
+ * ambient/default user: this app is multi-tenant, and a shared identity would
+ * mean one person's Gmail was readable by another. Making the parameter
+ * required is what stops that being reintroduced by accident.
+ */
 
 export type Result<T> = { ok: true; data: T } | { ok: false; error: string };
 
@@ -54,11 +60,14 @@ async function call<T = any>(
 export async function composioExecute(
   slug: string,
   args: Record<string, unknown>,
+  userId: string,
   signal?: AbortSignal,
 ): Promise<Result<unknown>> {
+  if (!userId) return { ok: false, error: "No Composio user id for this session." };
+
   const res = await call<any>(`/tools/execute/${encodeURIComponent(slug)}`, {
     method: "POST",
-    body: { user_id: composioUserId(), arguments: args },
+    body: { user_id: userId, arguments: args },
     signal,
   });
   if (!res.ok) return res;
@@ -114,9 +123,12 @@ export async function listToolkits(signal?: AbortSignal): Promise<Result<Toolkit
 
 export type Connection = { id: string; toolkit: string; status: string };
 
-export async function listConnections(signal?: AbortSignal): Promise<Result<Connection[]>> {
+export async function listConnections(
+  userId: string,
+  signal?: AbortSignal,
+): Promise<Result<Connection[]>> {
   const res = await call<any>(
-    `/connected_accounts?user_ids=${encodeURIComponent(composioUserId())}&limit=200`,
+    `/connected_accounts?user_ids=${encodeURIComponent(userId)}&limit=200`,
     { signal },
   );
   if (!res.ok) return res;
@@ -156,9 +168,9 @@ export async function getConnection(id: string): Promise<Result<Connection>> {
   };
 }
 
-/** Reads the signed-in Google address from the connected Gmail account. */
-export async function gmailAddress(): Promise<string> {
-  const res = await composioExecute("GMAIL_GET_PROFILE", { user_id: "me" });
+/** Reads the Google address behind a freshly connected Gmail account. */
+export async function gmailAddress(userId: string): Promise<string> {
+  const res = await composioExecute("GMAIL_GET_PROFILE", { user_id: "me" }, userId);
   if (!res.ok) return "";
   const d: any = res.data;
   return String(
@@ -202,7 +214,10 @@ async function ensureAuthConfig(toolkit: string): Promise<Result<string>> {
 export async function createConnectLink(
   toolkit: string,
   callbackUrl: string,
+  userId: string,
 ): Promise<Result<{ redirectUrl: string; connectedAccountId: string }>> {
+  if (!userId) return { ok: false, error: "No Composio user id for this session." };
+
   const cfg = await ensureAuthConfig(toolkit);
   if (!cfg.ok) return cfg;
 
@@ -210,7 +225,7 @@ export async function createConnectLink(
     method: "POST",
     body: {
       auth_config_id: cfg.data,
-      user_id: composioUserId(),
+      user_id: userId,
       callback_url: callbackUrl,
     },
   });
