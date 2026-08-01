@@ -1,66 +1,70 @@
-import { kvEnabled, redis } from "./store";
+import { dbEnabled, dbLoadMemories, dbSaveMemory, dbSearchMemories } from "./db";
 
 /**
- * Durable facts JARVIS has been told to remember.
+ * Per-user durable facts.
  *
- * Upstream this was SQLite with FTS5. Serverless has no local disk, so we use
- * Redis-over-HTTP when configured and degrade to an in-process list otherwise —
- * the app still runs on a fresh deploy with no extra services, it just forgets
- * when the instance recycles.
+ * Upstream this was SQLite with FTS5. Here it's Postgres full-text, scoped by
+ * email so one tenant can never read another's memory. The in-process fallback
+ * only exists so the app still runs before a database is attached.
  */
 
-const KEY = "jarvis:memories";
 const MAX = 200;
 
-let fallback: string[] = [];
+const fallback = new Map<string, string[]>();
 
-export async function loadMemories(): Promise<string[]> {
-  if (!kvEnabled()) return [...fallback];
-  try {
-    const result = await redis(["LRANGE", KEY, 0, MAX - 1]);
-    return Array.isArray(result) ? result.map(String) : [];
-  } catch {
-    return [...fallback];
+const localList = (email: string) => fallback.get(email) ?? [];
+
+export async function loadMemories(email: string): Promise<string[]> {
+  if (!email) return [];
+  if (dbEnabled()) {
+    try {
+      return await dbLoadMemories(email);
+    } catch {
+      /* fall through */
+    }
   }
+  return [...localList(email)];
 }
 
-export async function saveMemory(fact: string): Promise<boolean> {
+export async function saveMemory(email: string, fact: string): Promise<boolean> {
   const clean = fact.trim().slice(0, 400);
-  if (!clean) return false;
+  if (!clean || !email) return false;
 
-  if (!kvEnabled()) {
-    if (!fallback.includes(clean)) fallback.unshift(clean);
-    fallback = fallback.slice(0, MAX);
-    return true;
+  if (dbEnabled()) {
+    try {
+      await dbSaveMemory(email, clean);
+      return true;
+    } catch {
+      /* fall through */
+    }
   }
 
-  try {
-    // LREM first, so restating a fact promotes it instead of duplicating it.
-    await redis(["LREM", KEY, 0, clean]);
-    await redis(["LPUSH", KEY, clean]);
-    await redis(["LTRIM", KEY, 0, MAX - 1]);
-    return true;
-  } catch {
-    if (!fallback.includes(clean)) fallback.unshift(clean);
-    return true;
-  }
+  const list = localList(email).filter((f) => f !== clean);
+  list.unshift(clean);
+  fallback.set(email, list.slice(0, MAX));
+  return true;
 }
 
-export async function forgetMemory(fact: string): Promise<boolean> {
-  if (!kvEnabled()) {
-    fallback = fallback.filter((f) => f !== fact);
-    return true;
-  }
-  try {
-    await redis(["LREM", KEY, 0, fact]);
-    return true;
-  } catch {
-    return false;
-  }
-}
+export async function searchMemories(
+  email: string,
+  query: string,
+  limit = 8,
+): Promise<string[]> {
+  if (!email) return [];
 
-export async function searchMemories(query: string, limit = 8): Promise<string[]> {
-  const all = await loadMemories();
+  if (dbEnabled()) {
+    try {
+      const hits = await dbSearchMemories(email, query, limit);
+      if (hits.length) return hits;
+      // No full-text match is a legitimate answer, but fall back to recent
+      // facts so a vaguely-worded question still gets some context.
+      return (await dbLoadMemories(email, limit)).slice(0, limit);
+    } catch {
+      /* fall through */
+    }
+  }
+
+  const all = localList(email);
   const terms = query
     .toLowerCase()
     .split(/\W+/)
