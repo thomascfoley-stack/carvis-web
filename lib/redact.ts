@@ -27,8 +27,9 @@ const RULES: [RegExp, string][] = [
   // actual token standing.
   [/\b(bearer|token)\s+[A-Za-z0-9_\-.+/=]{6,}/gi, "$1 [redacted]"],
 
-  // Header-ish and field-ish assignments.
-  [/(authorization|bearer|x-api-key|api[-_]?key|password|token|secret)\s*[:=]?\s*["']?[A-Za-z0-9_\-.+/=]{6,}["']?/gi, "$1 [redacted]"],
+  // Header-ish and field-ish assignments — including the JSON spelling
+  // "password":"…", where a closing quote sits between key and separator.
+  [/(authorization|bearer|x-api-key|api[-_]?key|password|token|secret)["']?\s*[:=]?\s*["']?[A-Za-z0-9_\-.+/=]{6,}["']?/gi, "$1 [redacted]"],
 
   // Anything long and opaque enough to be a credential.
   [/\b[A-Za-z0-9_\-]{40,}\b/g, "[redacted]"],
