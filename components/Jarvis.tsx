@@ -9,45 +9,38 @@ import { Listener, speechSupported } from "@/lib/voice";
 
 type Turn = { role: "user" | "assistant"; text: string };
 
-type Health = {
-  llm: { provider: string; model: string; ready: boolean };
-  tts: { provider: string; ready: boolean; onDevice: boolean };
-  integrations: boolean;
-  memory: boolean;
-};
-
 export default function Jarvis() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [partial, setPartial] = useState("");
   const [interim, setInterim] = useState("");
   const [status, setStatus] = useState("");
+  const [note, setNote] = useState("");
   const [error, setError] = useState("");
   const [voiceError, setVoiceError] = useState("");
   const [listening, setListening] = useState(false);
   const [speaking, setSpeaking] = useState(false);
   const [thinking, setThinking] = useState(false);
   const [started, setStarted] = useState(false);
-  const [health, setHealth] = useState<Health | null>(null);
   const [typed, setTyped] = useState("");
+
+  /**
+   * Muting the microphone and silencing JARVIS are different actions and both
+   * are needed. Mute stops *you* being heard — useful when someone walks into
+   * the room — without cutting the reply short. Stop cuts the reply short.
+   */
+  const [muted, setMuted] = useState(false);
 
   const speakerRef = useRef<Speaker | null>(null);
   const listenerRef = useRef<Listener | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const turnsRef = useRef<Turn[]>([]);
   const busyRef = useRef(false);
+  const mutedRef = useRef(false);
 
   turnsRef.current = turns;
+  mutedRef.current = muted;
 
   const supported = useMemo(() => speechSupported(), []);
-
-  /* ----------------------------- bootstrap ---------------------------- */
-
-  useEffect(() => {
-    fetch("/api/health")
-      .then((r) => r.json())
-      .then(setHealth)
-      .catch(() => undefined);
-  }, []);
 
   if (!speakerRef.current && typeof window !== "undefined") {
     speakerRef.current = new Speaker();
@@ -60,13 +53,19 @@ export default function Jarvis() {
     if (speaker) speaker.onError = (m) => setVoiceError(m);
   }, []);
 
+  useEffect(() => {
+    const speaker = speakerRef.current;
+    if (!speaker) return;
+    return speaker.onSpeakingChange(setSpeaking);
+  }, []);
+
   const level = useCallback(() => speakerRef.current?.level() ?? 0, []);
 
   const orbState: OrbState = speaking
     ? "speaking"
     : thinking
       ? "thinking"
-      : listening
+      : listening && !muted
         ? "listening"
         : "idle";
 
@@ -78,6 +77,7 @@ export default function Jarvis() {
 
     busyRef.current = true;
     setError("");
+    setNote("");
     setInterim("");
     setPartial("");
     setThinking(true);
@@ -105,6 +105,12 @@ export default function Jarvis() {
         }),
         signal: controller.signal,
       });
+
+      // 428: signed in, but hasn't supplied their own keys yet.
+      if (res.status === 428) {
+        window.location.href = "/setup";
+        return;
+      }
 
       if (!res.ok || !res.body) {
         const detail = await res.json().catch(() => ({}));
@@ -141,6 +147,8 @@ export default function Jarvis() {
           } else if (ev.t === "status") {
             setStatus(ev.v);
             if (ev.v) setThinking(true);
+          } else if (ev.t === "note") {
+            setNote(ev.v);
           } else if (ev.t === "error") {
             setError(ev.v);
           }
@@ -164,13 +172,14 @@ export default function Jarvis() {
     }
   }, []);
 
-  /* ------------------------------ barge-in ---------------------------- */
+  /* -------------------------------- stop ------------------------------ */
 
   /**
-   * Rewrite history to what was actually heard. Without this the model
-   * believes you heard the whole reply, and every later turn is subtly wrong.
+   * Cut JARVIS off mid-sentence and rewrite history to what was actually
+   * heard. Without the rewrite the model believes you heard the whole reply,
+   * and every later turn is subtly wrong.
    */
-  const interrupt = useCallback(() => {
+  const stopSpeaking = useCallback(() => {
     const speaker = speakerRef.current;
     if (!speaker) return;
 
@@ -198,37 +207,37 @@ export default function Jarvis() {
 
   /* ------------------------------ microphone -------------------------- */
 
-  useEffect(() => {
-    const speaker = speakerRef.current;
-    if (!speaker) return;
-    return speaker.onSpeakingChange(setSpeaking);
-  }, []);
-
   const beginSession = useCallback(() => {
-    const speaker = speakerRef.current;
-    speaker?.unlock();
+    speakerRef.current?.unlock();
     setStarted(true);
 
     if (!supported) return;
 
     const listener = new Listener({
       onFinal: (text) => {
+        // Muted means muted: nothing you say is transcribed or sent.
+        if (mutedRef.current) return;
         setInterim("");
         void send(text);
       },
-      onInterim: setInterim,
-      onBargeIn: interrupt,
+      onInterim: (t) => {
+        if (!mutedRef.current) setInterim(t);
+      },
+      onBargeIn: () => {
+        if (!mutedRef.current) stopSpeaking();
+      },
       onStateChange: setListening,
       onError: setError,
     });
 
     listener.currentlySpeaking = () => speakerRef.current?.spokenText() ?? "";
     listener.isSpeaking = () => speakerRef.current?.isSpeaking ?? false;
-    listener.bargeInEnabled = () => true;
+    // While muted, your voice must never interrupt the reply.
+    listener.bargeInEnabled = () => !mutedRef.current;
 
     listenerRef.current = listener;
     listener.start();
-  }, [interrupt, send, supported]);
+  }, [send, stopSpeaking, supported]);
 
   useEffect(() => {
     return () => {
@@ -240,12 +249,6 @@ export default function Jarvis() {
   /* -------------------------------- view ------------------------------ */
 
   const lastAssistant = partial || turns.filter((t) => t.role === "assistant").slice(-1)[0]?.text;
-  const configIssue =
-    health && !health.llm.ready
-      ? "No model key configured yet."
-      : health && !health.tts.ready
-        ? "No voice key configured yet — JARVIS will use the on-device voice."
-        : "";
 
   return (
     <main className="stage">
@@ -253,11 +256,11 @@ export default function Jarvis() {
         <span className="wordmark">JARVIS</span>
         <nav>
           <Link href="/integrations">Integrations</Link>
-          <Link href="/settings">Settings</Link>
+          <Link href="/setup">Setup</Link>
         </nav>
       </header>
 
-      <div className="orb-wrap" onClick={speaking ? interrupt : undefined}>
+      <div className="orb-wrap">
         <Orb state={orbState} level={level} />
 
         {!started && (
@@ -271,15 +274,12 @@ export default function Jarvis() {
       <section className="readout">
         {error && <p className="line error">{error}</p>}
         {voiceError && (
-          <p className="line error">
-            Voice: {voiceError} — using the on-device voice instead.
-          </p>
+          <p className="line error">Voice: {voiceError} — using the on-device voice instead.</p>
         )}
-        {configIssue && !error && <p className="line muted">{configIssue}</p>}
+        {note && <p className="line muted">{note}</p>}
 
         {status && <p className="line status">{status}…</p>}
         {interim && <p className="line interim">{interim}</p>}
-
         {lastAssistant && !status && <p className="line said">{lastAssistant}</p>}
 
         {started && !supported && (
@@ -287,9 +287,32 @@ export default function Jarvis() {
             This browser has no speech recognition — use Chrome for voice, or type below.
           </p>
         )}
-
-        {started && speaking && <p className="line hint">Speak, or click the orb, to interrupt</p>}
+        {muted && <p className="line hint">Microphone muted — JARVIS can’t hear you</p>}
       </section>
+
+      {started && (
+        <div className="controls">
+          <button
+            className={`control mute${muted ? " on" : ""}`}
+            onClick={() => setMuted((m) => !m)}
+            aria-pressed={muted}
+            title="Mutes your microphone. Does not stop JARVIS speaking."
+          >
+            <span className="glyph">{muted ? "🔇" : "🎙"}</span>
+            <span className="label">{muted ? "Unmute me" : "Mute me"}</span>
+          </button>
+
+          <button
+            className="control stop"
+            onClick={stopSpeaking}
+            disabled={!speaking && !thinking}
+            title="Stops JARVIS mid-sentence."
+          >
+            <span className="glyph">◼</span>
+            <span className="label">Stop</span>
+          </button>
+        </div>
+      )}
 
       <form
         className="composer"
