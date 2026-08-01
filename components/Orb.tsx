@@ -8,14 +8,14 @@ export type OrbState = "idle" | "listening" | "thinking" | "speaking";
 /**
  * JARVIS — neural-net particle cloud.
  *
- * Faithful to the original macOS build, because the thing that makes it read
- * as a *brain* is not the particles, it's the connection lines drawn between
- * nearby ones — and the electrons that run along them while it thinks. A
- * hollow shell of points looks like a planet; a filled volume with edges looks
- * like a mind.
+ * The thing that makes it read as a *brain* is not the particles, it's the
+ * connection lines drawn between nearby ones in a filled volume — and the
+ * electrons that run along them while it thinks.
  *
- * Reacts to both voices: the assistant's output and, when granted, your
- * microphone — so it's alive while you speak, not only while it answers.
+ * Motion is deliberately restrained. An earlier version drove brightness
+ * straight from per-frame FFT output, which changes at up to 60Hz: that is a
+ * strobe, and a photosensitive-seizure risk. Every visual response now comes
+ * from a heavily low-passed envelope, and prefers-reduced-motion is honoured.
  */
 export default function Orb({
   state,
@@ -52,7 +52,6 @@ export default function Orb({
 
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(45, 1, 1, 1000);
-    // Much closer than the original's 80: the cloud should dominate the screen.
     camera.position.z = 40;
 
     const N = 2200;
@@ -157,6 +156,15 @@ export default function Orb({
     const freq = new Uint8Array(64);
     const micFreq = new Uint8Array(64);
 
+    // Smoothed envelopes. Raw per-frame FFT values change at up to 60Hz, and
+    // driving brightness from them produces a strobe. Photosensitive-epilepsy
+    // guidance is to stay under ~3 luminance changes per second, so these are
+    // low-passed hard and every visual response is derived from them.
+    let sBass = 0, sMid = 0;
+    const prefersReduced =
+      typeof window !== "undefined" &&
+      window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+
     const resize = () => {
       const { clientWidth: w, clientHeight: h } = mount;
       if (!w || !h) return;
@@ -183,10 +191,10 @@ export default function Orb({
           targetRadius = 21; targetSpeed = 0.2; targetBright = 0.5; targetSize = 0.36;
           targetLineAmount = 0.55; targetERate = 0.002; break;
         case "listening":
-          targetRadius = 18; targetSpeed = 0.32; targetBright = 0.68; targetSize = 0.42;
+          targetRadius = 18; targetSpeed = 0.24; targetBright = 0.68; targetSize = 0.42;
           targetLineAmount = 0.75; targetERate = 0.006; break;
         case "thinking":
-          targetRadius = 14; targetSpeed = 0.55; targetBright = 0.75; targetSize = 0.32;
+          targetRadius = 14; targetSpeed = 0.34; targetBright = 0.75; targetSize = 0.32;
           targetLineAmount = 1.0; targetERate = 0.02; break;
         case "speaking":
           targetRadius = 16; targetSpeed = 0.22; targetBright = 0.78; targetSize = 0.44;
@@ -200,16 +208,16 @@ export default function Orb({
       lineAmount += (targetLineAmount - lineAmount) * 0.02;
       eRate += (targetERate - eRate) * 0.02;
 
-      // A state change throws the whole cloud into a slow tumble; it reads as
-      // the thing physically reacting rather than a value being interpolated.
+      // A state change gives the cloud a gentle tumble; it reads as the thing
+      // reacting rather than a value being interpolated.
       if (s !== lastState) { transitionEnergy = 1; lastState = s; }
-      transitionEnergy *= 0.985;
-      if (transitionEnergy > 0.05) {
-        spinX += transitionEnergy * 0.012 * Math.sin(t * 1.7);
-        spinY += transitionEnergy * 0.015;
-        spinZ += transitionEnergy * 0.008 * Math.cos(t * 1.3);
+      transitionEnergy *= 0.992;
+      if (transitionEnergy > 0.05 && !prefersReduced) {
+        spinX += transitionEnergy * 0.004 * Math.sin(t * 1.7);
+        spinY += transitionEnergy * 0.005;
+        spinZ += transitionEnergy * 0.003 * Math.cos(t * 1.3);
       }
-      spinY += 0.0009; // always turning slightly, even at rest
+      spinY += prefersReduced ? 0 : 0.00035; // a slow drift, not a spin
 
       /* ------------------------------ audio ---------------------------- */
 
@@ -234,9 +242,17 @@ export default function Orb({
         mid = Math.max(mid, m / (16 * 255));
       }
 
+      // ~0.5s time constant: responsive enough to feel connected to the
+      // voice, far too slow to flicker.
+      sBass += (bass - sBass) * 0.035;
+      sMid += (mid - sMid) * 0.035;
+      if (prefersReduced) { sBass *= 0.25; sMid *= 0.25; }
+      bass = sBass;
+      mid = sMid;
+
       let zTarget = Math.sin(t * 0.12) * 8;
-      if (s === "thinking") zTarget = Math.sin(t * 0.3) * 15 + Math.sin(t * 0.9) * 6;
-      else if (s === "speaking") zTarget = Math.sin(t * 0.15) * 6 - bass * 12;
+      if (s === "thinking") zTarget = Math.sin(t * 0.14) * 9;
+      else if (s === "speaking") zTarget = Math.sin(t * 0.1) * 5 - bass * 5;
       cloudZVel += (zTarget - cloudZ) * 0.008;
       cloudZVel *= 0.94;
       cloudZ += cloudZVel;
@@ -246,11 +262,12 @@ export default function Orb({
       electrons.rotation.set(spinX, spinY, spinZ);
       points.position.z = lines.position.z = electrons.position.z = cloudZ;
 
-      mat.opacity = Math.min(1, curBright + 0.2 + bass * 0.3);
-      mat.size = curSize + mid * 0.3;
+      // Shallow modulation depth, with a floor: the cloud never blinks out.
+      mat.opacity = Math.min(0.95, curBright + 0.18 + bass * 0.12);
+      mat.size = curSize + mid * 0.12;
       // Thin additive lines need near-full alpha to register against black;
       // visual weight is controlled by density, not opacity.
-      lineMat.opacity = Math.min(0.95, lineAmount * (1.15 + bass * 0.6));
+      lineMat.opacity = Math.min(0.9, lineAmount * (1.1 + bass * 0.18));
 
       /* --------------------------- particles --------------------------- */
 
@@ -276,13 +293,13 @@ export default function Orb({
         vel[i3 + 2] -= (z / dist) * pull;
 
         if (bass > 0.05) {
-          const k = bass * 0.022;
+          const k = bass * 0.009;
           vel[i3] += (x / dist) * k;
           vel[i3 + 1] += (y / dist) * k;
           vel[i3 + 2] += (z / dist) * k;
         }
         if (mid > 0.1) {
-          const pulse = Math.sin(t * 8 + px) * mid * 0.013;
+          const pulse = Math.sin(t * 2.2 + px) * mid * 0.006;
           vel[i3] += (x / dist) * pulse;
           vel[i3 + 1] += (y / dist) * pulse;
         }
@@ -332,12 +349,12 @@ export default function Orb({
       /* --------------------------- electrons --------------------------- */
 
       if (eRate > 0.0005 && connections.length && active.length < MAX_ELECTRONS) {
-        if (Math.random() < eRate * 12) {
+        if (Math.random() < eRate * (prefersReduced ? 0 : 6)) {
           const c = connections[Math.floor(Math.random() * connections.length)];
           active.push({
             sx: c[0], sy: c[1], sz: c[2],
             ex: c[3], ey: c[4], ez: c[5],
-            t: 0, speed: 0.012 + Math.random() * 0.03,
+            t: 0, speed: 0.006 + Math.random() * 0.012,
           });
         }
       }
