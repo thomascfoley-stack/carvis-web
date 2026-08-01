@@ -21,9 +21,17 @@ const url =
 
 export const dbEnabled = () => !!url;
 
+/**
+ * One client per instance. neon() is only an HTTP wrapper, but building it on
+ * every query re-parses the DSN and re-allocates fetch options — measurable on
+ * a hot path that runs per sentence.
+ */
+let cached: ReturnType<typeof neon> | null = null;
+
 function client() {
   if (!url) throw new Error("No DATABASE_URL configured");
-  return neon(url);
+  if (!cached) cached = neon(url);
+  return cached;
 }
 
 /* ------------------------------ schema ------------------------------- */
@@ -31,14 +39,33 @@ function client() {
 let schemaReady: Promise<void> | null = null;
 
 /**
- * Idempotent, lazily applied once per warm instance. Avoids a separate
- * migration step at the cost of one cheap round trip on a cold start.
+ * Schema version. Bump when the DDL below changes shape; the fast-path probe
+ * skips every CREATE statement when the stored version already matches.
+ */
+const SCHEMA_VERSION = 3;
+
+/**
+ * Idempotent, lazily applied once per warm instance.
+ *
+ * The probe matters at scale: with thousands of lambda cold starts a minute,
+ * "a dozen CREATE TABLE IF NOT EXISTS on every cold start" becomes a steady
+ * stream of catalog-lock traffic on the database. One SELECT against a
+ * version row is the cheap path; DDL only runs when the version is behind.
  */
 export function ensureSchema(): Promise<void> {
   if (schemaReady) return schemaReady;
 
   schemaReady = (async () => {
     const sql = client();
+
+    try {
+      const rows = (await sql`
+        SELECT version FROM schema_meta LIMIT 1
+      `) as unknown as { version: number }[];
+      if ((rows[0]?.version ?? 0) >= SCHEMA_VERSION) return;
+    } catch {
+      /* table missing — first boot, fall through to DDL */
+    }
 
     await sql`
       CREATE TABLE IF NOT EXISTS users (
@@ -112,6 +139,16 @@ export function ensureSchema(): Promise<void> {
         status       TEXT NOT NULL DEFAULT 'open'
       )`;
     await sql`CREATE INDEX IF NOT EXISTS failures_status_idx ON failures (status, last_seen DESC)`;
+
+    await sql`
+      CREATE TABLE IF NOT EXISTS schema_meta (
+        singleton  BOOLEAN PRIMARY KEY DEFAULT true CHECK (singleton),
+        version    INTEGER NOT NULL
+      )`;
+    await sql`
+      INSERT INTO schema_meta (singleton, version) VALUES (true, ${SCHEMA_VERSION})
+      ON CONFLICT (singleton) DO UPDATE SET version = ${SCHEMA_VERSION}
+    `;
   })().catch((e) => {
     // Let the next request retry rather than wedging a bad promise forever.
     schemaReady = null;
@@ -209,6 +246,9 @@ export async function dbLoadMemories(email: string, limit = 40): Promise<string[
   return rows.map((r) => r.fact);
 }
 
+/** Hard per-user cap. Memory is a working set, not an archive. */
+const MEMORY_CAP = 500;
+
 export async function dbSaveMemory(email: string, fact: string): Promise<void> {
   await ensureSchema();
   const sql = client();
@@ -216,6 +256,20 @@ export async function dbSaveMemory(email: string, fact: string): Promise<void> {
     INSERT INTO memory (email, fact) VALUES (${email.toLowerCase()}, ${fact})
     ON CONFLICT (email, fact) DO UPDATE SET created_at = now()
   `;
+
+  // Amortised trim: 1-in-20 saves pays for the DELETE that keeps any single
+  // user's memory bounded. Unbounded per-user rows is how a table quietly
+  // becomes the reason the whole app got slow at scale.
+  if (Math.random() < 0.05) {
+    await sql`
+      DELETE FROM memory
+      WHERE email = ${email.toLowerCase()}
+        AND id NOT IN (
+          SELECT id FROM memory WHERE email = ${email.toLowerCase()}
+          ORDER BY created_at DESC LIMIT ${MEMORY_CAP}
+        )
+    `.catch(() => undefined);
+  }
 }
 
 export async function dbSearchMemories(
