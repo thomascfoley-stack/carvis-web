@@ -2,7 +2,7 @@ import { sessionFromRequest } from "@/lib/auth";
 import { CATEGORIES, categoryIndex } from "@/lib/catalog";
 import { composioEnabled, listConnections, listToolkits } from "@/lib/composio";
 
-export const runtime = "edge";
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
@@ -19,7 +19,7 @@ export async function GET(req: Request) {
   if (!composioEnabled()) {
     return Response.json({
       enabled: false,
-      error: "Composio is not configured. Set COMPOSIO_API_KEY in Vercel.",
+      error: "Composio is not configured. Set COMPOSIO_API_KEY.",
       categories: CATEGORIES.map((c) => ({ ...c, toolkits: [] })),
       other: [],
       connections: [],

@@ -3,7 +3,7 @@ import { ttsCatalogue } from "@/lib/providers/tts";
 import { getSettings, maskSettings, saveSettings, type Settings } from "@/lib/store";
 import { composioEnabled } from "@/lib/composio";
 
-export const runtime = "edge";
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {

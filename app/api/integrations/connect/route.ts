@@ -1,7 +1,7 @@
 import { sessionFromRequest } from "@/lib/auth";
 import { createConnectLink, deleteConnection, listConnections } from "@/lib/composio";
 
-export const runtime = "edge";
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /** Starts an OAuth flow for a toolkit and hands the browser the redirect URL. */

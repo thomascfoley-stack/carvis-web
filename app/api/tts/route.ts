@@ -3,7 +3,7 @@ import { addTtsChars, dbEnabled } from "@/lib/db";
 import { synthesize } from "@/lib/providers/tts";
 import { getSettings } from "@/lib/store";
 
-export const runtime = "edge";
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
