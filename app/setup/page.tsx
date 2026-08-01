@@ -300,4 +300,284 @@ export default function SetupPage() {
         <h2>Model</h2>
         <div className="row">
           <div className="field">
-      %d�0
+            <label>Provider</label>
+            <select
+              value={form.llmProvider}
+              onChange={(e) => {
+                const p = data.llmProviders.find((x: any) => x.id === e.target.value);
+                setForm({
+                  ...form,
+                  llmProvider: e.target.value,
+                  llmModel: p?.models?.[0] ?? "",
+                  llmKey: "",
+                });
+              }}
+            >
+              {data.llmProviders.map((p: any) => (
+                <option key={p.id} value={p.id}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field">
+            <label>Model</label>
+            {llmP?.models?.length ? (
+              <select
+                value={form.llmModel}
+                onChange={(e) => setForm({ ...form, llmModel: e.target.value })}
+              >
+                {llmP.models.map((m: string) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                value={form.llmModel}
+                onChange={(e) => setForm({ ...form, llmModel: e.target.value })}
+                placeholder="model id"
+              />
+            )}
+          </div>
+        </div>
+        {llmP?.editableBaseUrl && (
+          <div className="field">
+            <label>API base URL</label>
+            <input
+              value={form.llmBaseUrl}
+              onChange={(e) => setForm({ ...form, llmBaseUrl: e.target.value })}
+              placeholder="https://your-endpoint.example/v1"
+            />
+            <span className="note">https only — the key travels with every request.</span>
+          </div>
+        )}
+        <div className="field">
+          <label>{keyLabel("API key", c.llmKey)}</label>
+          <input
+            type="password"
+            value={form.llmKey}
+            onChange={(e) => setForm({ ...form, llmKey: e.target.value })}
+            placeholder={
+              llmProviderChanged
+                ? "new provider — paste its key"
+                : c.llmKey.set
+                  ? "leave blank to keep the stored key"
+                  : "paste key"
+            }
+            autoComplete="off"
+          />
+          {llmProviderChanged && c.llmKey.set && !form.llmKey.trim() && (
+            <span className="note err">
+              You changed provider. Saving without a key here clears the old one, because a{" "}
+              {c.llmProvider} key will not work at {llmP?.label ?? form.llmProvider}.
+            </span>
+          )}
+          {llmP?.keyUrl && (
+            <span className="note">
+              Get one at{" "}
+              <a href={llmP.keyUrl} target="_blank" rel="noreferrer">
+                {llmP.keyUrl}
+              </a>
+            </span>
+          )}
+        </div>
+      </div>
+
+      <div className="card">
+        <h2>Voice</h2>
+        <div className="row">
+          <div className="field">
+            <label>Provider</label>
+            <select
+              value={form.ttsProvider}
+              onChange={(e) => {
+                const p = data.ttsProviders.find((x: any) => x.id === e.target.value);
+                setForm({
+                  ...form,
+                  ttsProvider: e.target.value,
+                  ttsVoice: p?.defaultVoice ?? "",
+                  ttsModel: p?.defaultModel ?? "",
+                  ttsKey: "",
+                });
+              }}
+            >
+              {data.ttsProviders.map((p: any) => (
+                <option key={p.id} value={p.id}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field">
+            <label>Model</label>
+            {ttsP?.models?.length ? (
+              <select
+                value={form.ttsModel}
+                onChange={(e) => setForm({ ...form, ttsModel: e.target.value })}
+              >
+                {ttsP.models.map((m: string) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                value={form.ttsModel}
+                onChange={(e) => setForm({ ...form, ttsModel: e.target.value })}
+                placeholder={ttsP?.defaultModel || "default"}
+              />
+            )}
+          </div>
+        </div>
+
+        <div className="field">
+          <label>
+            {ttsP?.voiceLabel ?? "Voice"}
+            {loadingVoices && <span className="note"> loading…</span>}
+            {!loadingVoices && voices.length > 0 && (
+              <span className="note"> {voices.length} available</span>
+            )}
+          </label>
+
+          {voices.length > 0 ? (
+            <>
+              <input
+                value={voiceFilter}
+                onChange={(e) => setVoiceFilter(e.target.value)}
+                placeholder="filter by name, accent or language…"
+              />
+              <select
+                size={Math.min(10, Math.max(4, shownVoices.length))}
+                value={form.ttsVoice}
+                onChange={(e) => setForm({ ...form, ttsVoice: e.target.value })}
+                style={{ marginTop: 8 }}
+              >
+                {/* A saved voice that isn't in the list must stay selectable,
+                    or opening this page would silently change your voice. */}
+                {form.ttsVoice && !voices.some((v) => v.id === form.ttsVoice) && (
+                  <option value={form.ttsVoice}>{form.ttsVoice} (current)</option>
+                )}
+                {shownVoices.map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.label}
+                    {v.tag ? ` — ${v.tag}` : ""}
+                  </option>
+                ))}
+              </select>
+              {shownVoices.length < voices.length && (
+                <span className="note">
+                  Showing {shownVoices.length} of {voices.length} — keep typing to narrow it.
+                </span>
+              )}
+            </>
+          ) : (
+            <input
+              value={form.ttsVoice}
+              onChange={(e) => setForm({ ...form, ttsVoice: e.target.value })}
+              placeholder={ttsP?.defaultVoice}
+            />
+          )}
+
+          <div className="row" style={{ marginTop: 10 }}>
+            <button
+              className="btn ghost"
+              onClick={preview}
+              disabled={previewing || !form.ttsVoice || !c.ttsKey.set}
+              title="Speaks one line using the saved key for this provider."
+            >
+              {previewing ? "Playing…" : "▶ Preview"}
+            </button>
+            {ttsP?.listLive && (
+              <button
+                className="btn ghost"
+                onClick={() => loadVoices(form.ttsProvider, true)}
+                disabled={loadingVoices}
+                title="Re-fetch from the provider — use after cloning a new voice."
+              >
+                {loadingVoices ? "Refreshing…" : "↻ Refresh list"}
+              </button>
+            )}
+          </div>
+
+          {previewError && <span className="note err">{previewError}</span>}
+          {voiceMeta?.error && !voices.length && (
+            <span className="note err">Could not list voices: {voiceMeta.error}</span>
+          )}
+          {voiceMeta?.stale && (
+            <span className="note err">
+              Showing a cached list — the provider could not be reached just now.
+            </span>
+          )}
+          {!loadingVoices && !voices.length && !voiceMeta?.error && ttsP?.needsKey && (
+            <span className="note">
+              Save your {ttsP.label} key, then the voices from your account appear here.
+            </span>
+          )}
+
+          {/* The list is a convenience, not a cage: a brand-new voice id may
+              not be in it yet, and typing one has to keep working. */}
+          {voices.length > 0 && (
+            <details style={{ marginTop: 8 }}>
+              <summary className="note">Enter a voice ID directly</summary>
+              <input
+                value={form.ttsVoice}
+                onChange={(e) => setForm({ ...form, ttsVoice: e.target.value })}
+                placeholder={ttsP?.defaultVoice}
+                style={{ marginTop: 6 }}
+              />
+            </details>
+          )}
+        </div>
+        {ttsP?.editableBaseUrl && (
+          <div className="field">
+            <label>API base URL</label>
+            <input
+              value={form.ttsBaseUrl}
+              onChange={(e) => setForm({ ...form, ttsBaseUrl: e.target.value })}
+              placeholder="https://your-endpoint.example/v1"
+            />
+            <span className="note">https only — the key travels with every request.</span>
+          </div>
+        )}
+        {ttsP?.needsKey && (
+          <div className="field">
+            <label>{keyLabel("API key", c.ttsKey)}</label>
+            <input
+              type="password"
+              value={form.ttsKey}
+              onChange={(e) => setForm({ ...form, ttsKey: e.target.value })}
+              placeholder={c.ttsKey.set ? "leave blank to keep the stored key" : "paste key"}
+              autoComplete="off"
+            />
+            {ttsP.keyUrl && (
+              <span className="note">
+                Get one at{" "}
+                <a href={ttsP.keyUrl} target="_blank" rel="noreferrer">
+                  {ttsP.keyUrl}
+                </a>
+              </span>
+            )}
+          </div>
+        )}
+        {ttsP?.note && <span className="note">{ttsP.note}</span>}
+      </div>
+
+      <button
+        className="btn"
+        onClick={save}
+        disabled={saving || !data.storage.database || !data.storage.encryption}
+      >
+        {saving ? "Saving…" : "Save"}
+      </button>
+      {saved && <span className="saved">{saved}</span>}
+      {c.onboarded && (
+        <Link href="/" className="saved" style={{ marginLeft: 16 }}>
+          Start talking →
+        </Link>
+      )}
+    </div>
+  );
+}
