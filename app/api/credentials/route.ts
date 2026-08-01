@@ -1,5 +1,10 @@
 import { sessionFromRequest } from "@/lib/auth";
-import { loadCredentials, maskCredentials, saveCredentials } from "@/lib/credentials";
+import {
+  loadCredentials,
+  maskCredentials,
+  saveCredentials,
+  secretsUnreadable,
+} from "@/lib/credentials";
 import { encryptionConfigured } from "@/lib/crypto";
 import { dbEnabled } from "@/lib/db";
 import { forgetSession, listTools } from "@/lib/mcp";
@@ -15,9 +20,10 @@ export async function GET(req: Request) {
   const session = await sessionFromRequest(req);
   if (!session) return Response.json({ error: "Not signed in." }, { status: 401 });
 
-  const [creds, prefs] = await Promise.all([
+  const [creds, prefs, stale] = await Promise.all([
     loadCredentials(session.email),
     loadPrefs(session.email),
+    secretsUnreadable(session.email),
   ]);
 
   return Response.json({
@@ -35,7 +41,7 @@ export async function GET(req: Request) {
       note: p.note ?? "",
     })),
     ttsProviders: ttsCatalogue(),
-    storage: { database: dbEnabled(), encryption: encryptionConfigured() },
+    storage: { database: dbEnabled(), encryption: encryptionConfigured(), stale },
   });
 }
 

@@ -28,7 +28,7 @@ export default function SetupPage() {
     ttsKey: "",
   });
 
-  useEffect(() => {
+  const load = () =>
     fetch("/api/credentials")
       .then((r) => (r.status === 401 ? (window.location.href = "/login") : r.json()))
       .then((d) => {
@@ -46,6 +46,9 @@ export default function SetupPage() {
         }));
       })
       .catch((e) => setError(String(e)));
+
+  useEffect(() => {
+    void load();
   }, []);
 
   if (!data) {
@@ -59,6 +62,12 @@ export default function SetupPage() {
   const c = data.credentials;
   const llmP = data.llmProviders.find((p: any) => p.id === form.llmProvider);
   const ttsP = data.ttsProviders.find((p: any) => p.id === form.ttsProvider);
+
+  // Changing provider drops the stored key on save — a key for one provider is
+  // useless at another, and silently reusing it produces a 401 that looks like
+  // the new key never took. Say so before they hit Save, not after.
+  const llmProviderChanged = form.llmProvider !== c.llmProvider;
+  const ttsProviderChanged = form.ttsProvider !== c.ttsProvider;
 
   const save = async () => {
     setSaving(true);
@@ -121,6 +130,14 @@ export default function SetupPage() {
           keys in the clear.
         </p>
       )}
+      {data.storage.stale && (
+        <p className="line error">
+          Your keys are still stored, but the server&rsquo;s encryption key has changed since they
+          were saved, so they can no longer be read. Paste them in again below and they will
+          stick. To stop this recurring, set <code>JARVIS_ENCRYPTION_KEY</code> to a fixed value
+          you never rotate — otherwise rotating the Composio key wipes every stored credential.
+        </p>
+      )}
 
       <div className="card">
         <h2>What should JARVIS call you?</h2>
@@ -165,7 +182,7 @@ export default function SetupPage() {
           {testing ? "Testing…" : "Test connection"}
         </button>
         {testResult && (
-          <p className="note" style={{ marginTop: 10 }}>
+          <p className={`note ${testResult.ok ? "" : "err"}`} style={{ marginTop: 10 }}>
             {testResult.ok
               ? `Connected — ${testResult.toolCount} tools available${
                   testResult.sample?.length ? `: ${testResult.sample.join(", ")}…` : ""
@@ -227,9 +244,22 @@ export default function SetupPage() {
             type="password"
             value={form.llmKey}
             onChange={(e) => setForm({ ...form, llmKey: e.target.value })}
-            placeholder={c.llmKey.set ? "leave blank to keep the stored key" : "paste key"}
+            placeholder={
+              llmProviderChanged
+                ? "new provider — paste its key"
+                : c.llmKey.set
+                  ? "leave blank to keep the stored key"
+                  : "paste key"
+            }
             autoComplete="off"
           />
+          {llmProviderChanged && c.llmKey.set && !form.llmKey.trim() && (
+            <span className="note err">
+              You changed provider. Saving without a key here clears the old one, because a
+              {" "}
+              {c.llmProvider} key will not work at {llmP?.label ?? form.llmProvider}.
+            </span>
+          )}
           {llmP?.keyUrl && (
             <span className="note">
               Get one at{" "}
@@ -282,9 +312,22 @@ export default function SetupPage() {
               type="password"
               value={form.ttsKey}
               onChange={(e) => setForm({ ...form, ttsKey: e.target.value })}
-              placeholder={c.ttsKey.set ? "leave blank to keep the stored key" : "paste key"}
+              placeholder={
+                ttsProviderChanged
+                  ? "new provider — paste its key"
+                  : c.ttsKey.set
+                    ? "leave blank to keep the stored key"
+                    : "paste key"
+              }
               autoComplete="off"
             />
+            {ttsProviderChanged && c.ttsKey.set && !form.ttsKey.trim() && (
+              <span className="note err">
+                You changed provider. Saving without a key here clears the old one, because a
+                {" "}
+                {c.ttsProvider} key will not work at {ttsP?.label ?? form.ttsProvider}.
+              </span>
+            )}
             {ttsP.keyUrl && (
               <span className="note">
                 Get one at{" "}
