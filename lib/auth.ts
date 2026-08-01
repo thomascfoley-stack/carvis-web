@@ -39,6 +39,19 @@ export function allowedEmails(): string[] {
 /** Login is ALWAYS enforced. There is no "open until configured" mode. */
 export const authConfigured = () => true;
 
+/**
+ * Operators allowed to read the failures table (`CARVIS_ADMIN_EMAILS`,
+ * comma-separated). Deliberately NOT defaulted from the sign-in allowlist:
+ * failure rows are cross-tenant, so admin is opt-in or it is nobody.
+ */
+export function isAdmin(email: string): boolean {
+  return cfg("ADMIN_EMAILS")
+    .split(",")
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean)
+    .includes(email.trim().toLowerCase());
+}
+
 /** Shared signup code. When unset, signup is open to any Google account. */
 export const inviteCode = () => cfg("INVITE_CODE");
 
@@ -71,11 +84,15 @@ export function domainAllowed(email: string): boolean {
 }
 
 function secret(): string {
-  return (
-    cfg("AUTH_SECRET") ||
-    env("COMPOSIO_API_KEY") ||
-    "carvis-insecure-development-secret"
-  );
+  const s = cfg("AUTH_SECRET") || env("COMPOSIO_API_KEY");
+  if (s) return s;
+  // Signing sessions with a string that ships in the repo would make every
+  // cookie — including an admin's — forgeable. Production refuses loudly
+  // rather than pretending; the dev constant exists for local hacking only.
+  if (env("NODE_ENV") === "production") {
+    throw new Error("Set CARVIS_AUTH_SECRET (or COMPOSIO_API_KEY) — refusing a forgeable session secret.");
+  }
+  return "carvis-insecure-development-secret";
 }
 
 function b64url(bytes: Uint8Array): string {
