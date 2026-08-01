@@ -75,6 +75,7 @@ Time-to-first-word is the only latency number that matters in a voice app.
 | `CARVIS_ENCRYPTION_KEY` | yes | Master key for credential encryption. Pick once, never rotate |
 | `CARVIS_INVITE_CODE` | no | Gate signup with a shared code |
 | `CARVIS_ALLOWED_EMAILS` / `CARVIS_ALLOWED_DOMAINS` | no | Harder allowlists |
+| `CARVIS_ADMIN_EMAILS` | no | Operators who may read the failures queue (`/api/failures`) |
 
 (Legacy `JARVIS_*` names are still honoured.)
 
@@ -106,6 +107,7 @@ mic → Web Speech API → /api/chat (streaming NDJSON)
 | `lib/credentials.ts` | Per-user BYOK, AES-GCM, provider-switch hygiene |
 | `lib/crypto.ts` | Envelope encryption + master-key rotation detection |
 | `lib/redact.ts` | Nothing user-visible ships without passing through this |
+| `lib/graph.ts` | One wrapper for every fallible step: timing, capture, retry |
 | `components/Orb.tsx` | Neural-net particle cloud (motion-safety constrained) |
 | `test/run.mjs` | 780-assertion loop harness against mock providers |
 
@@ -119,6 +121,10 @@ CARVIS_ALLOW_MEMORY_CREDENTIALS=1 npx tsx test/run.mjs --rounds 2 --loop 80
 Mock LLM/TTS/MCP servers + a production `next start`: auth boundary, key
 non-leakage, chat/tool/heartbeat/detach streaming, MCP session recovery,
 concurrency, aborts, tenant isolation. See `docs/scale-security-audit.md`.
+
+Production defects land fingerprinted in the `failures` table with a
+redacted reproduction; a daily agent triages the queue and opens PRs —
+never merges. The node contract and that loop: `docs/graph-engineering.md`.
 
 ## Known limits
 
