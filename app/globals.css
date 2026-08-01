@@ -26,7 +26,24 @@ body {
   color: var(--ink);
   font-family: var(--font);
   -webkit-font-smoothing: antialiased;
+  /* Stop landscape text inflation and the grey tap flash on mobile. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Contain the voice stage only; settings pages keep normal scroll physics. */
+.stage {
   overscroll-behavior: none;
+}
+
+/* Kill the 300ms double-tap-zoom delay on everything tappable. */
+a,
+button,
+input,
+select,
+label {
+  touch-action: manipulation;
 }
 
 /* Soft radial depth behind everything. */
@@ -62,15 +79,20 @@ select {
   z-index: 1;
   display: flex;
   flex-direction: column;
+  min-height: 100vh; /* fallback for browsers without dvh */
   min-height: 100dvh;
-  padding: 0 20px 24px;
+  /* The composer is the last thing on screen; keep it above the iPhone home
+     indicator and Android gesture bar. */
+  padding: 0 20px calc(24px + env(safe-area-inset-bottom, 0px));
 }
 
 .topbar {
+  position: relative; /* own layer: the orb canvas must never sit over it */
+  z-index: 2;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 18px 4px;
+  padding: 12px 4px;
 }
 
 .wordmark {
@@ -87,6 +109,13 @@ select {
 }
 .topbar nav a {
   color: var(--ink-faint);
+  /* 44px touch targets without changing the visual: padding is cancelled by
+     negative margins. */
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 10px;
+  margin: 0 -10px;
 }
 .topbar nav a:hover {
   color: var(--accent);
@@ -106,6 +135,16 @@ select {
   inset: 0;
   width: 100%;
   height: 100%;
+  overflow: hidden;
+  /* The cloud is scenery. Taps must fall through to the nav and buttons. */
+  pointer-events: none;
+}
+
+/* Belt and braces: the WebGL canvas must never exceed its wrapper. */
+.orb-canvas canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
 }
 
 .ignition {
@@ -119,13 +158,16 @@ select {
   border-radius: 999px;
   border: 1px solid var(--line);
   background: rgba(8, 14, 28, 0.62);
+  -webkit-backdrop-filter: blur(14px); /* iOS Safari ≤17 only knows the prefix */
   backdrop-filter: blur(14px);
   cursor: pointer;
   transition: border-color 0.2s, transform 0.2s;
 }
-.ignition:hover {
-  border-color: rgba(111, 232, 255, 0.5);
-  transform: translateY(-1px);
+@media (hover: hover) {
+  .ignition:hover {
+    border-color: rgba(111, 232, 255, 0.5);
+    transform: translateY(-1px);
+  }
 }
 .ignition span {
   font-size: 15px;
@@ -206,6 +248,9 @@ select {
 
 .composer input {
   flex: 1;
+  /* Inputs have an intrinsic ~size-20 min width that overflows 320px phones
+     unless explicitly allowed to shrink. */
+  min-width: 0;
   padding: 13px 16px;
   border-radius: var(--radius);
   border: 1px solid var(--line);
@@ -221,6 +266,7 @@ select {
 }
 
 .composer button {
+  flex-shrink: 0;
   padding: 13px 20px;
   border-radius: var(--radius);
   border: 1px solid var(--line);
@@ -228,8 +274,10 @@ select {
   cursor: pointer;
   transition: background 0.2s, opacity 0.2s;
 }
-.composer button:hover:not(:disabled) {
-  background: rgba(27, 108, 255, 0.3);
+@media (hover: hover) {
+  .composer button:hover:not(:disabled) {
+    background: rgba(27, 108, 255, 0.3);
+  }
 }
 .composer button:disabled {
   opacity: 0.35;
@@ -257,6 +305,12 @@ select {
   color: var(--ink-faint);
   font-size: 13px;
   margin: 0 0 26px;
+}
+.page > a.sub {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  margin-bottom: 4px;
 }
 
 .card {
@@ -288,6 +342,7 @@ select {
 }
 .field input,
 .field select {
+  min-height: 44px;
   padding: 10px 12px;
   border-radius: 10px;
   border: 1px solid var(--line);
@@ -316,6 +371,7 @@ select {
 }
 
 .btn {
+  min-height: 44px;
   padding: 11px 18px;
   border-radius: 10px;
   border: 1px solid var(--line);
@@ -323,8 +379,10 @@ select {
   cursor: pointer;
   transition: background 0.2s;
 }
-.btn:hover:not(:disabled) {
-  background: rgba(27, 108, 255, 0.32);
+@media (hover: hover) {
+  .btn:hover:not(:disabled) {
+    background: rgba(27, 108, 255, 0.32);
+  }
 }
 .btn:disabled {
   opacity: 0.4;
@@ -394,9 +452,11 @@ select {
   text-align: left;
   transition: border-color 0.18s, background 0.18s;
 }
-.tk:hover {
-  border-color: rgba(111, 232, 255, 0.4);
-  background: rgba(12, 20, 38, 0.7);
+@media (hover: hover) {
+  .tk:hover {
+    border-color: rgba(111, 232, 255, 0.4);
+    background: rgba(12, 20, 38, 0.7);
+  }
 }
 .tk.on {
   border-color: rgba(120, 255, 200, 0.4);
@@ -433,10 +493,11 @@ select {
 .login {
   position: relative;
   z-index: 1;
+  min-height: 100vh; /* fallback */
   min-height: 100dvh;
   display: grid;
   place-items: center;
-  padding: 24px;
+  padding: 24px 24px calc(24px + env(safe-area-inset-bottom, 0px));
 }
 
 .login-card {
@@ -445,6 +506,7 @@ select {
   border: 1px solid var(--line);
   border-radius: 18px;
   background: rgba(8, 14, 28, 0.6);
+  -webkit-backdrop-filter: blur(16px);
   backdrop-filter: blur(16px);
   padding: 38px 30px;
 }
@@ -483,4 +545,76 @@ select {
 .google:hover {
   background: #fff;
   text-decoration: none;
+}
+
+/* ------------------------------ controls ----------------------------- */
+/* Deliberately large: these are reached for mid-conversation, often without
+   looking, and sometimes urgently. */
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: center;
+  width: min(44rem, 100%);
+  margin: 4px auto 0;
+}
+
+.control {
+  min-width: 0;
+}
+
+.control {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  flex: 1;
+  min-height: 62px;
+  padding: 14px 22px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: rgba(8, 14, 28, 0.6);
+  cursor: pointer;
+  transition: background 0.18s, border-color 0.18s, opacity 0.18s;
+}
+@media (hover: hover) {
+  .control:hover:not(:disabled) {
+    border-color: rgba(111, 232, 255, 0.45);
+    background: rgba(12, 20, 38, 0.8);
+  }
+}
+.control:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.control .glyph {
+  font-size: 20px;
+  line-height: 1;
+}
+.control .label {
+  font-size: 15px;
+  letter-spacing: 0.06em;
+}
+
+/* Muted is a state you must be able to see at a glance — forgetting you're
+   muted and talking to nothing is the failure mode worth designing against. */
+.control.mute.on {
+  background: rgba(255, 176, 76, 0.16);
+  border-color: rgba(255, 176, 76, 0.55);
+  color: #ffca7a;
+}
+
+@media (hover: hover) {
+  .control.stop:hover:not(:disabled) {
+    background: rgba(255, 122, 122, 0.18);
+    border-color: rgba(255, 122, 122, 0.5);
+  }
+}
+
+@media (max-width: 520px) {
+  .control .label {
+    font-size: 14px;
+  }
 }
