@@ -1,21 +1,36 @@
 /**
- * Sessions and access gates.
+ * Sign in with Google, brokered by Composio.
  *
- * Identity is established by Composio's Google OAuth broker (see
- * app/api/auth/*). This module signs the session and state cookies.
+ * Composio isn't an identity provider, so identity here is: "completed a Google
+ * OAuth flow that this server started, and the resulting Gmail profile is on
+ * the allowlist". Two things make that sound rather than theatre —
+ *
+ *   1. A signed, short-lived state cookie issued before the redirect. Only this
+ *      server can mint one, so /callback can't be driven directly.
+ *   2. The connected account must actually be ACTIVE at Composio afterwards.
+ *
+ * Everything is Web Crypto so it runs on the Edge runtime, and therefore in
+ * middleware.
  */
 
-export const SESSION_COOKIE = "jarvis_session";
-export const STATE_COOKIE = "jarvis_oauth_state";
+export const SESSION_COOKIE = "carvis_session";
+export const STATE_COOKIE = "carvis_oauth_state";
 
 const SESSION_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 const STATE_MAX_AGE = 60 * 10; // 10 minutes
 
 const env = (n: string) => (process.env[n] || "").trim();
 
-/** Optional hard allowlist of Google addresses. */
+/**
+ * The app was renamed Jarvis -> Carvis. Config renames are the classic way to
+ * lock everyone out on deploy day, so CARVIS_* is preferred and the old
+ * JARVIS_* names keep working. Same value semantics either way.
+ */
+const cfg = (suffix: string) => env(`CARVIS_${suffix}`) || env(`JARVIS_${suffix}`);
+
+/** Comma-separated Google addresses permitted to sign in. */
 export function allowedEmails(): string[] {
-  return env("JARVIS_ALLOWED_EMAILS")
+  return cfg("ALLOWED_EMAILS")
     .split(",")
     .map((e) => e.trim().toLowerCase())
     .filter(Boolean);
@@ -25,7 +40,7 @@ export function allowedEmails(): string[] {
 export const authConfigured = () => true;
 
 /** Shared signup code. When unset, signup is open to any Google account. */
-export const inviteCode = () => env("JARVIS_INVITE_CODE");
+export const inviteCode = () => cfg("INVITE_CODE");
 
 export function checkInvite(supplied: string): boolean {
   const expected = inviteCode();
@@ -45,7 +60,7 @@ export function isAllowed(email: string): boolean {
 
 /** Optional domain restriction, e.g. "composio.dev,example.com". */
 export function domainAllowed(email: string): boolean {
-  const domains = env("JARVIS_ALLOWED_DOMAINS")
+  const domains = cfg("ALLOWED_DOMAINS")
     .split(",")
     .map((d) => d.trim().toLowerCase().replace(/^@/, ""))
     .filter(Boolean);
@@ -57,9 +72,9 @@ export function domainAllowed(email: string): boolean {
 
 function secret(): string {
   return (
-    env("JARVIS_AUTH_SECRET") ||
+    cfg("AUTH_SECRET") ||
     env("COMPOSIO_API_KEY") ||
-    "jarvis-insecure-development-secret"
+    "carvis-insecure-development-secret"
   );
 }
 
@@ -89,7 +104,7 @@ async function sign(payload: string): Promise<string> {
   return b64url(new Uint8Array(sig));
 }
 
-/** Constant-time compare, so signature and invite checks don't leak via timing. */
+/** Constant-time compare, so signature checks don't leak via timing. */
 function safeEqual(a: string, b: string): boolean {
   const enc = new TextEncoder();
   const ab = enc.encode(a);

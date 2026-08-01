@@ -22,11 +22,14 @@ export type Credentials = {
   llmProvider: string;
   llmModel: string;
   llmKey: string;
+  /** Only meaningful for the custom providers, which have no fixed endpoint. */
+  llmBaseUrl: string;
   /** Voice provider. */
   ttsProvider: string;
   ttsVoice: string;
   ttsModel: string;
   ttsKey: string;
+  ttsBaseUrl: string;
 };
 
 export const EMPTY: Credentials = {
@@ -35,11 +38,49 @@ export const EMPTY: Credentials = {
   llmProvider: "anthropic",
   llmModel: "claude-haiku-4-5-20251001",
   llmKey: "",
+  llmBaseUrl: "",
   ttsProvider: "openai",
   ttsVoice: "onyx",
   ttsModel: "gpt-4o-mini-tts",
   ttsKey: "",
+  ttsBaseUrl: "",
 };
+
+/**
+ * A user-supplied endpoint must be somewhere we can genuinely send a key:
+ * https only (a stray http:// URL would put the bearer token on the wire in
+ * the clear), and never a private/loopback address — this runs server-side,
+ * so an internal URL here is an SSRF invitation.
+ *
+ * CARVIS_ALLOW_INSECURE_BASEURL exists for the local test harness, which
+ * points the custom providers at mock servers on 127.0.0.1. Never set it in
+ * production.
+ */
+export function acceptableBaseUrl(raw: string): boolean {
+  if (!raw) return true;
+  const insecure =
+    process.env.CARVIS_ALLOW_INSECURE_BASEURL || process.env.JARVIS_ALLOW_INSECURE_BASEURL;
+  if ((insecure || "").trim() === "1") {
+    try {
+      new URL(raw);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (u.protocol !== "https:") return false;
+  const host = u.hostname.toLowerCase();
+  if (host === "localhost" || host === "0.0.0.0" || host.endsWith(".local")) return false;
+  if (/^127\.|^10\.|^192\.168\.|^169\.254\.|^\[?::1\]?$|^\[?fc|^\[?fd/.test(host)) return false;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return false;
+  return true;
+}
 
 const SECRET_FIELDS = ["composioKey", "llmKey", "ttsKey"] as const;
 
@@ -48,8 +89,20 @@ const KID = "_kid";
 
 const fallback = new Map<string, Credentials>();
 
+/**
+ * Short-TTL read cache. A single spoken reply hits this once for the chat
+ * turn and once per sentence for TTS — five sentences means six DB reads and
+ * six AES decrypts of identical data. 30 seconds of staleness is invisible
+ * (saves invalidate locally anyway) and removes the per-sentence round trip.
+ */
+const TTL_MS = 30_000;
+const recent = new Map<string, { at: number; creds: Credentials }>();
+
 export async function loadCredentials(email: string): Promise<Credentials> {
   if (!email) return { ...EMPTY };
+
+  const hit = recent.get(email);
+  if (hit && Date.now() - hit.at < TTL_MS) return { ...hit.creds };
 
   if (dbEnabled()) {
     try {
@@ -61,6 +114,8 @@ export async function loadCredentials(email: string): Promise<Credentials> {
       for (const f of SECRET_FIELDS) {
         out[f] = await decryptSecret(String(raw[f] ?? ""));
       }
+      recent.set(email, { at: Date.now(), creds: { ...out } });
+      if (recent.size > 5000) recent.clear(); // bounded, crude, sufficient
       return out;
     } catch {
       /* fall through */
@@ -98,6 +153,15 @@ export async function saveCredentials(
   if (patch.ttsProvider && patch.ttsProvider !== current.ttsProvider) {
     if (!String(patch.ttsKey ?? "").trim()) next.ttsKey = "";
   }
+
+  // Refuse rather than store an endpoint we'd be unwilling to call. The MCP
+  // URL is included: it's fetched server-side with full request control, which
+  // makes an internal address here a textbook SSRF pivot.
+  if (!acceptableBaseUrl(next.llmBaseUrl)) next.llmBaseUrl = current.llmBaseUrl ?? "";
+  if (!acceptableBaseUrl(next.ttsBaseUrl)) next.ttsBaseUrl = current.ttsBaseUrl ?? "";
+  if (next.mcpUrl && !acceptableBaseUrl(next.mcpUrl)) next.mcpUrl = current.mcpUrl ?? "";
+
+  recent.delete(email);
 
   if (dbEnabled()) {
     try {
@@ -154,9 +218,11 @@ export function maskCredentials(c: Credentials) {
     mcpUrl: c.mcpUrl,
     llmProvider: c.llmProvider,
     llmModel: c.llmModel,
+    llmBaseUrl: c.llmBaseUrl ?? "",
     ttsProvider: c.ttsProvider,
     ttsVoice: c.ttsVoice,
     ttsModel: c.ttsModel,
+    ttsBaseUrl: c.ttsBaseUrl ?? "",
     composioKey: { set: !!c.composioKey, hint: maskSecret(c.composioKey) },
     llmKey: { set: !!c.llmKey, hint: maskSecret(c.llmKey) },
     ttsKey: { set: !!c.ttsKey, hint: maskSecret(c.ttsKey) },
