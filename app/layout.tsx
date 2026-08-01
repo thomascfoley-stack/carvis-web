@@ -3,7 +3,7 @@ import "./globals.css";
 import "./controls.css";
 
 export const metadata: Metadata = {
-  title: "JARVIS",
+  title: "CARVIS",
   description: "A voice-first assistant. Talk to it, and it talks back.",
 };
 

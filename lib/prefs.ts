@@ -4,12 +4,12 @@ import { dbEnabled, dbLoadPrefs, dbSavePrefs } from "./db";
  * Per-user preferences.
  *
  * These were global, which is wrong once anyone can sign up: two people would
- * share one name. They now live in Neon keyed by email, so what JARVIS calls
+ * share one name. They now live in Neon keyed by email, so what CARVIS calls
  * you is yours and survives a redeploy.
  */
 
 export type Prefs = {
-  /** What JARVIS calls you. Empty means "don't use any form of address". */
+  /** What CARVIS calls you. Empty means "don't use any form of address". */
   userName: string;
   verbosity: "terse" | "balanced" | "detailed";
   autoListen: boolean;
@@ -18,7 +18,7 @@ export type Prefs = {
 
 export const DEFAULT_PREFS: Prefs = {
   // Deliberately empty. "Sir" is a costume, not a default — if you haven't
-  // said what to call you, JARVIS simply doesn't use a name.
+  // said what to call you, CARVIS simply doesn't use a name.
   userName: "",
   verbosity: "balanced",
   autoListen: true,
