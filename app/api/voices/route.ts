@@ -1,6 +1,6 @@
 import { sessionFromRequest } from "@/lib/auth";
 import { loadCredentials } from "@/lib/credentials";
-import { dbEnabled, dbLoadVoices, dbSaveVoices, recordFailure } from "@/lib/db";
+import { dbEnabled, dbLoadVoices, dbSaveVoices } from "@/lib/db";
 import { fetchVoices, findTts, type VoiceOption } from "@/lib/providers/tts";
 
 export const runtime = "nodejs";
@@ -86,7 +86,7 @@ async function resolve(
         /* nothing cached either */
       }
     }
-    void recordFailure({ node: "voices", errorClass: provider, message: result.error });
+    // Failure capture lives inside fetchVoices' graph node now.
     return Response.json({ ...base, voices: [], error: result.error });
   }
 
