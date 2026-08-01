@@ -1,5 +1,6 @@
 import type { TtsSettings } from "../store";
 
+import { defineNode } from "../graph";
 import { redact } from "../redact";
 
 /**
@@ -63,6 +64,9 @@ export type TtsProvider = {
 };
 
 const json = { "content-type": "application/json" };
+
+/** Shorthand for a fixed voice list where the id is also the display name. */
+const named = (...ids: string[]): VoiceOption[] => ids.map((id) => ({ id, label: id }));
 
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
 
@@ -459,12 +463,25 @@ function dig(obj: any, path: string): unknown {
   return path.split(".").reduce((o, k) => (o == null ? o : o[k]), obj);
 }
 
-/** Runs a provider descriptor and returns MP3 bytes. */
-export async function synthesize(
+type SynthResult = { ok: true; audio: ArrayBuffer } | { ok: false; error: string };
+
+/**
+ * `{ok:false}` results that describe the user's configuration, not a defect.
+ * They must stay out of the failures table or they drown it. In a BYOK app a
+ * 401/403 from the user's own key is configuration too — a missing key and a
+ * revoked one are the same problem with different spellings.
+ */
+const isConfigState = (error: string) =>
+  error === "browser-tts" ||
+  / API key configured\.$/.test(error) ||
+  /key first\.$/.test(error) ||
+  /\s40[13]:/.test(error);
+
+async function synthesizeBody(
   text: string,
   s: TtsSettings,
   signal?: AbortSignal,
-): Promise<{ ok: true; audio: ArrayBuffer } | { ok: false; error: string }> {
+): Promise<SynthResult> {
   const provider = findTts(s.providerId);
 
   if (provider.id === "browser") {
@@ -506,6 +523,28 @@ export async function synthesize(
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   return { ok: true, audio: bytes.buffer };
 }
+
+/**
+ * The reproduction sample is ids and a length only. Never the settings object
+ * (it carries the key) and never the spoken text (it's the user's words — a
+ * length reproduces a payload-size bug just as well).
+ */
+const synthNode = defineNode<{ text: string; s: TtsSettings }, SynthResult>({
+  id: (a) => `tts.${findTts(a.s.providerId).id}`,
+  run: (a, ctx) => synthesizeBody(a.text, a.s, ctx.signal),
+  soft: (r) =>
+    !r.ok && !isConfigState(r.error) ? { class: "SynthesisFailed", message: r.error } : null,
+  sample: (a) => ({
+    provider: a.s.providerId,
+    voice: a.s.voiceId,
+    model: a.s.model,
+    textLen: a.text.length,
+  }),
+});
+
+/** Runs a provider descriptor and returns MP3 bytes. */
+export const synthesize = (text: string, s: TtsSettings, signal?: AbortSignal) =>
+  synthNode({ text, s }, { signal });
 
 /* ---------------------------- voice catalogue --------------------------- */
 
@@ -550,10 +589,7 @@ export type VoiceListResult =
  * the browser. A provider with no listing capability is not an error — the UI
  * simply keeps its free-text field.
  */
-export async function fetchVoices(
-  s: TtsSettings,
-  signal?: AbortSignal,
-): Promise<VoiceListResult> {
+async function fetchVoicesBody(s: TtsSettings, signal?: AbortSignal): Promise<VoiceListResult> {
   const provider = findTts(s.providerId);
   const index = provider.voices;
 
@@ -598,6 +634,22 @@ export async function fetchVoices(
 
   return { ok: true, voices: voices.slice(0, 500), live: true };
 }
+
+/**
+ * A settings-page list is worth one silent retry when the provider blips —
+ * network failures and 5xx only. A 4xx means the request itself is wrong and
+ * will be wrong again.
+ */
+const voicesNode = defineNode<TtsSettings, VoiceListResult>({
+  id: (s) => `voices.${findTts(s.providerId).id}`,
+  run: (s, ctx) => fetchVoicesBody(s, ctx.signal),
+  soft: (r) =>
+    !r.ok && !isConfigState(r.error) ? { class: "VoiceListFailed", message: r.error } : null,
+  retryOnce: (m) => /^Could not reach /.test(m) || /\s5\d\d:/.test(m),
+  sample: (s) => ({ provider: s.providerId }),
+});
+
+export const fetchVoices = (s: TtsSettings, signal?: AbortSignal) => voicesNode(s, { signal });
 
 /** Registry shipped to the settings UI — descriptors are functions, so strip them. */
 export function ttsCatalogue() {
