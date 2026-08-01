@@ -1,5 +1,7 @@
 import type { LlmSettings } from "../store";
 
+import { redact } from "../redact";
+
 /**
  * Provider-agnostic LLM layer.
  *
@@ -23,16 +25,8 @@ export type LlmProvider = {
   note?: string;
 };
 
+/** Order matters: the first entry is the default shown to a new user. */
 export const LLM_PROVIDERS: LlmProvider[] = [
-  {
-    id: "moonshot",
-    label: "Moonshot / Kimi",
-    format: "anthropic",
-    baseUrl: "https://api.moonshot.ai/anthropic",
-    models: ["kimi-k2.7-code-highspeed", "kimi-k2.5", "kimi-k3[1m]"],
-    keyUrl: "https://platform.moonshot.ai",
-    note: "Fast and cheap. The default the upstream JARVIS was tuned for.",
-  },
   {
     id: "anthropic",
     label: "Anthropic",
@@ -92,6 +86,15 @@ export const LLM_PROVIDERS: LlmProvider[] = [
     models: ["anthropic/claude-haiku-4.5", "google/gemini-2.0-flash-001"],
     keyUrl: "https://openrouter.ai/keys",
     note: "One key, hundreds of models.",
+  },
+  {
+    id: "moonshot",
+    label: "Moonshot / Kimi",
+    format: "anthropic",
+    baseUrl: "https://api.moonshot.ai/anthropic",
+    models: ["kimi-k2.7-code-highspeed", "kimi-k2.5", "kimi-k3[1m]"],
+    keyUrl: "https://platform.moonshot.ai",
+    note: "Cheap and fast. What the upstream macOS CARVIS was tuned for.",
   },
   {
     id: "custom",
@@ -299,7 +302,7 @@ export async function* streamLLM(args: {
       signal: args.signal,
     });
   } catch (e) {
-    yield { type: "error", message: `Could not reach ${provider.label}: ${String(e).slice(0, 160)}` };
+    yield { type: "error", message: `Could not reach ${provider.label}: ${redact(e).slice(0, 160)}` };
     return;
   }
 
@@ -307,7 +310,7 @@ export async function* streamLLM(args: {
     const detail = await res.text().catch(() => "");
     yield {
       type: "error",
-      message: `${provider.label} returned ${res.status}. ${detail.slice(0, 240)}`,
+      message: `${provider.label} returned ${res.status}. ${redact(detail).slice(0, 240)}`,
     };
     return;
   }
