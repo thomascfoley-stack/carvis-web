@@ -2,8 +2,8 @@
  * Sign in with Google, brokered by Composio.
  *
  * Composio isn't an identity provider, so identity here is: "completed a Google
- * OAuth flow that this server started, and the resulting Gmail profile is on
- * the allowlist". Two things make that sound rather than theatre —
+ * OAuth flow that this server started, and the resulting Gmail profile passes
+ * the gates". Two things make that sound rather than theatre —
  *
  *   1. A signed, short-lived state cookie issued before the redirect. Only this
  *      server can mint one, so /callback can't be driven directly.
@@ -21,7 +21,7 @@ const STATE_MAX_AGE = 60 * 10; // 10 minutes
 
 const env = (n: string) => (process.env[n] || "").trim();
 
-/** Comma-separated Google addresses permitted to sign in. */
+/** Optional hard allowlist of Google addresses. */
 export function allowedEmails(): string[] {
   return env("JARVIS_ALLOWED_EMAILS")
     .split(",")
@@ -29,20 +29,38 @@ export function allowedEmails(): string[] {
     .filter(Boolean);
 }
 
-/**
- * Login is ALWAYS enforced. There is no "open until configured" mode.
- *
- * That matters more than it looks: Composio is single-tenant here, so a
- * stranger who clicked "Sign in with Google" would complete the flow against
- * the owner's connected account and be handed the owner's identity. An empty
- * allowlist must therefore deny everyone, never admit everyone.
- */
+/** Login is ALWAYS enforced. There is no "open until configured" mode. */
 export const authConfigured = () => true;
 
+/** Shared signup code. When unset, signup is open to any Google account. */
+export const inviteCode = () => env("JARVIS_INVITE_CODE");
+
+export function checkInvite(supplied: string): boolean {
+  const expected = inviteCode();
+  if (!expected) return true;
+  return safeEqual(supplied.trim(), expected);
+}
+
+/**
+ * Optional hard allowlist, layered on top of the invite code. Empty means
+ * "anyone holding a valid invite code", which is the multi-tenant default.
+ */
 export function isAllowed(email: string): boolean {
   const list = allowedEmails();
-  if (!list.length) return false;
+  if (!list.length) return true;
   return list.includes(email.trim().toLowerCase());
+}
+
+/** Optional domain restriction, e.g. "composio.dev,example.com". */
+export function domainAllowed(email: string): boolean {
+  const domains = env("JARVIS_ALLOWED_DOMAINS")
+    .split(",")
+    .map((d) => d.trim().toLowerCase().replace(/^@/, ""))
+    .filter(Boolean);
+  if (!domains.length) return true;
+  const at = email.lastIndexOf("@");
+  if (at < 0) return false;
+  return domains.includes(email.slice(at + 1).toLowerCase());
 }
 
 function secret(): string {
@@ -79,7 +97,7 @@ async function sign(payload: string): Promise<string> {
   return b64url(new Uint8Array(sig));
 }
 
-/** Constant-time compare, so signature checks don't leak via timing. */
+/** Constant-time compare, so signature and invite checks don't leak via timing. */
 function safeEqual(a: string, b: string): boolean {
   const enc = new TextEncoder();
   const ab = enc.encode(a);
@@ -116,25 +134,50 @@ async function open<T = any>(token: string | undefined): Promise<T | null> {
 
 /* ------------------------------ sessions ------------------------------ */
 
-export const createSession = (email: string) => mint({ email }, SESSION_MAX_AGE);
+export type Session = { email: string; cid: string };
 
-export async function readSession(
-  token: string | undefined,
-): Promise<{ email: string } | null> {
-  const data = await open<{ email?: string }>(token);
-  return data?.email ? { email: data.email } : null;
+/** `cid` is the caller's own Composio user id — the tenant isolation boundary. */
+export const createSession = (email: string, composioUserId: string) =>
+  mint({ email, cid: composioUserId }, SESSION_MAX_AGE);
+
+export async function readSession(token: string | undefined): Promise<Session | null> {
+  const data = await open<{ email?: string; cid?: string }>(token);
+  return data?.email && data?.cid ? { email: data.email, cid: data.cid } : null;
 }
 
 export const verifySession = async (token: string | undefined) => !!(await readSession(token));
 
+export function readCookie(req: Request, name: string): string | undefined {
+  const header = req.headers.get("cookie") ?? "";
+  for (const part of header.split(";")) {
+    const [k, ...rest] = part.trim().split("=");
+    if (k === name) return rest.join("=");
+  }
+  return undefined;
+}
+
+export const sessionFromRequest = (req: Request) =>
+  readSession(readCookie(req, SESSION_COOKIE));
+
 /* -------------------------- oauth state token ------------------------- */
 
-export const createState = (connectedAccountId: string) =>
-  mint({ caid: connectedAccountId }, STATE_MAX_AGE);
+/**
+ * Carries the freshly minted Composio user id through the OAuth round trip.
+ * Signed, so /callback cannot be driven with an id we did not issue.
+ */
+export const createState = (connectedAccountId: string, composioUserId: string) =>
+  mint({ caid: connectedAccountId, cid: composioUserId }, STATE_MAX_AGE);
 
-export async function readState(token: string | undefined): Promise<{ caid: string } | null> {
-  const data = await open<{ caid?: string }>(token);
-  return data?.caid ? { caid: data.caid } : null;
+export async function readState(
+  token: string | undefined,
+): Promise<{ caid: string; cid: string } | null> {
+  const data = await open<{ caid?: string; cid?: string }>(token);
+  return data?.caid && data?.cid ? { caid: data.caid, cid: data.cid } : null;
+}
+
+/** Opaque per-user Composio identity. Never derived from the email. */
+export function newComposioUserId(): string {
+  return `u_${crypto.randomUUID().replace(/-/g, "")}`;
 }
 
 /* -------------------------------- cookies ----------------------------- */
