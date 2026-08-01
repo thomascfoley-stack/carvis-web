@@ -1,25 +1,18 @@
 import {
   STATE_COOKIE,
-  allowedEmails,
   clearState,
   createSession,
+  domainAllowed,
   isAllowed,
+  readCookie,
   readState,
   sessionCookie,
 } from "@/lib/auth";
 import { getConnection, gmailAddress } from "@/lib/composio";
+import { findUser, upsertUser } from "@/lib/db";
 
 export const runtime = "edge";
 export const dynamic = "force-dynamic";
-
-function readCookie(req: Request, name: string): string | undefined {
-  const header = req.headers.get("cookie") ?? "";
-  for (const part of header.split(";")) {
-    const [k, ...rest] = part.trim().split("=");
-    if (k === name) return rest.join("=");
-  }
-  return undefined;
-}
 
 function fail(origin: string, message: string): Response {
   const url = new URL("/login", origin);
@@ -33,34 +26,42 @@ function fail(origin: string, message: string): Response {
 export async function GET(req: Request) {
   const origin = new URL(req.url).origin;
 
-  // 1. The flow must be one we started.
+  // 1. The flow must be one this server started, and carries the Composio id.
   const state = await readState(readCookie(req, STATE_COOKIE));
   if (!state) return fail(origin, "Sign-in link expired. Please try again.");
 
-  // 2. Composio must actually hold an active connection now.
+  // 2. Composio must actually hold the connection now.
   const conn = await getConnection(state.caid);
   if (!conn.ok) return fail(origin, `Could not verify the connection: ${conn.error}`);
   if (conn.data.status && !["ACTIVE", "INITIATED"].includes(conn.data.status)) {
     return fail(origin, `Google authorisation did not complete (${conn.data.status}).`);
   }
 
-  // 3. The resulting Google identity must be on the allowlist.
-  const email = await gmailAddress();
+  // 3. Identity comes from the profile behind *this session's* Composio id.
+  const email = await gmailAddress(state.cid);
   if (!email) {
     return fail(origin, "Connected, but Gmail did not return a profile. Check the Gmail scopes.");
   }
-  if (!allowedEmails().length) {
-    return fail(
-      origin,
-      "No allowlist configured. Set JARVIS_ALLOWED_EMAILS in Vercel before anyone can sign in.",
-    );
+  if (!domainAllowed(email)) {
+    return fail(origin, `${email} is not on an allowed domain for this instance.`);
   }
   if (!isAllowed(email)) {
     return fail(origin, `${email} is not on the allowlist for this instance.`);
   }
 
+  // 4. Returning users keep their original Composio id so their existing
+  //    connections and memory follow them; new users get the one we minted.
+  let composioUserId = state.cid;
+  try {
+    const existing = await findUser(email);
+    composioUserId = existing?.composio_user_id ?? state.cid;
+    await upsertUser(email, composioUserId);
+  } catch (e) {
+    return fail(origin, `Could not reach the database: ${String(e).slice(0, 120)}`);
+  }
+
   const headers = new Headers({ location: new URL("/", origin).toString() });
-  headers.append("set-cookie", sessionCookie(await createSession(email)));
+  headers.append("set-cookie", sessionCookie(await createSession(email, composioUserId)));
   headers.append("set-cookie", clearState());
 
   return new Response(null, { status: 302, headers });

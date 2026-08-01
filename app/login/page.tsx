@@ -8,33 +8,55 @@ import { useEffect, useState } from "react";
  */
 export default function LoginPage() {
   const [error, setError] = useState("");
+  const [code, setCode] = useState("");
+  const [needsCode, setNeedsCode] = useState(false);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const err = params.get("error");
     if (err) setError(err);
+
+    fetch("/api/auth/status")
+      .then((r) => r.json())
+      .then((d) => setNeedsCode(!!d.inviteRequired))
+      .catch(() => undefined);
   }, []);
+
+  const go = (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    const q = code.trim() ? `?code=${encodeURIComponent(code.trim())}` : "";
+    window.location.href = `/api/auth/start${q}`;
+  };
 
   return (
     <div className="login">
-      <div className="login-card">
+      <form className="login-card" onSubmit={go}>
         <div className="mark">JARVIS</div>
 
         <p>
-          Sign in with the Google account this instance is configured for.
-          Authorisation is brokered by Composio, which also connects your mail
-          and calendar in the same step.
+          A voice-first assistant. Sign in with Google to connect your calendar
+          and mail — authorisation is brokered by Composio, and your data stays
+          scoped to your own account.
         </p>
 
         {error && <div className="err">{error}</div>}
 
-        <a
-          className="google"
-          href="/api/auth/start"
-          onClick={() => setBusy(true)}
-          aria-disabled={busy}
-        >
+        {needsCode && (
+          <div className="field" style={{ textAlign: "left", marginBottom: 18 }}>
+            <label>Invite code</label>
+            <input
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              placeholder="required while in beta"
+              autoComplete="off"
+              required
+            />
+          </div>
+        )}
+
+        <button className="google" type="submit" disabled={busy}>
           <svg width="17" height="17" viewBox="0 0 48 48" aria-hidden="true">
             <path
               fill="#EA4335"
@@ -54,8 +76,8 @@ export default function LoginPage() {
             />
           </svg>
           {busy ? "Redirecting…" : "Sign in with Google"}
-        </a>
-      </div>
+        </button>
+      </form>
     </div>
   );
 }

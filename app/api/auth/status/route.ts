@@ -1,25 +1,34 @@
-import { SESSION_COOKIE, allowedEmails, authConfigured, clearSession, readSession } from "@/lib/auth";
+import { allowedEmails, clearSession, inviteCode, sessionFromRequest } from "@/lib/auth";
 import { composioEnabled } from "@/lib/composio";
+import { dbEnabled, findUser, todayUsage } from "@/lib/db";
 
 export const runtime = "edge";
 export const dynamic = "force-dynamic";
 
-function readCookie(req: Request, name: string): string | undefined {
-  const header = req.headers.get("cookie") ?? "";
-  for (const part of header.split(";")) {
-    const [k, ...rest] = part.trim().split("=");
-    if (k === name) return rest.join("=");
-  }
-  return undefined;
-}
-
 export async function GET(req: Request) {
-  const session = await readSession(readCookie(req, SESSION_COOKIE));
+  const session = await sessionFromRequest(req);
+
+  let usage: { messages: number; limit: number } | null = null;
+  if (session && dbEnabled()) {
+    try {
+      const [today, user] = await Promise.all([
+        todayUsage(session.email),
+        findUser(session.email),
+      ]);
+      usage = { messages: today.messages, limit: user?.daily_limit ?? 50 };
+    } catch {
+      /* usage is informational only */
+    }
+  }
+
   return Response.json({
-    enforced: authConfigured(),
-    allowlistSize: allowedEmails().length,
+    // Never leak the code itself — only whether one is required.
+    inviteRequired: !!inviteCode(),
+    allowlistRestricted: allowedEmails().length > 0,
     composio: composioEnabled(),
+    database: dbEnabled(),
     email: session?.email ?? null,
+    usage,
   });
 }
 
