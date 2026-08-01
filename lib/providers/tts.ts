@@ -103,11 +103,11 @@ export const TTS_PROVIDERS: TtsProvider[] = [
     voiceLabel: "Voice name",
     models: ["gpt-4o-mini-tts", "tts-1", "tts-1-hd"],
     defaultModel: "gpt-4o-mini-tts",
-    note: "Onyx is the closest to a JARVIS read.",
+    note: "Onyx is the closest to a CARVIS read.",
     // OpenAI publishes no voices endpoint — the set is fixed and documented.
     voices: {
       fixed: [
-        { id: "onyx", label: "onyx", tag: "deep, male — closest to JARVIS" },
+        { id: "onyx", label: "onyx", tag: "deep, male — closest to CARVIS" },
         { id: "ash", label: "ash", tag: "male, expressive" },
         { id: "ballad", label: "ballad", tag: "male, warm" },
         { id: "echo", label: "echo", tag: "male, even" },
@@ -366,7 +366,7 @@ export const TTS_PROVIDERS: TtsProvider[] = [
     audioPath: "audioContent",
     defaultVoice: "en-GB-Neural2-B",
     voiceLabel: "Voice name",
-    note: "Uses an API key, not a service account. en-GB-Neural2-B is a good JARVIS match.",
+    note: "Uses an API key, not a service account. en-GB-Neural2-B is a good CARVIS match.",
     voices: {
       live: {
         url: (s) =>
@@ -401,7 +401,7 @@ export const TTS_PROVIDERS: TtsProvider[] = [
     voiceLabel: "Reference / model ID",
     models: ["speech-1.6", "speech-1.5", "s1"],
     defaultModel: "speech-1.6",
-    note: "Hosts the original JARVIS voice model used by the upstream macOS app.",
+    note: "Hosts the original CARVIS voice model used by the upstream macOS app.",
     voices: {
       live: {
         // `self=true` returns the caller's own library rather than the whole
