@@ -16,6 +16,8 @@ import { redact } from "./redact";
  *      address another tenant's integrations: we don't hold their endpoint.
  */
 
+/* ------------------------------ local tools ---------------------------- */
+
 const LOCAL_TOOLS: ToolDef[] = [
   {
     name: "set_preferred_name",
@@ -72,6 +74,20 @@ export type Catalogue = {
   note: string;
 };
 
+/**
+ * Tool catalogues barely change, but without a cache every single chat turn
+ * pays a full MCP round trip (initialize + tools/list on cold instances)
+ * before the model can even start thinking. Five minutes of staleness against
+ * seconds off time-to-first-token is not a close call. Keyed by endpoint, so
+ * changing your MCP URL in Setup bypasses it immediately.
+ */
+const CATALOGUE_TTL_MS = 5 * 60_000;
+const catalogueCache = new Map<string, { at: number; cat: Catalogue }>();
+
+export function forgetCatalogue(mcpUrl: string): void {
+  catalogueCache.delete(mcpUrl);
+}
+
 export async function buildCatalogue(
   creds: Credentials,
   signal?: AbortSignal,
@@ -84,6 +100,9 @@ export async function buildCatalogue(
       note: "No MCP endpoint connected, so only memory tools are available.",
     };
   }
+
+  const hit = catalogueCache.get(creds.mcpUrl);
+  if (hit && Date.now() - hit.at < CATALOGUE_TTL_MS) return hit.cat;
 
   const res = await listTools(creds.mcpUrl, creds.composioKey, signal);
   if (!res.ok) {
@@ -109,7 +128,7 @@ export async function buildCatalogue(
       },
     }));
 
-  return {
+  const cat: Catalogue = {
     tools: [...remote, ...LOCAL_TOOLS],
     remoteCount: res.data.length,
     truncated: res.data.length > MAX_REMOTE_TOOLS,
@@ -118,6 +137,9 @@ export async function buildCatalogue(
         ? `Showing ${MAX_REMOTE_TOOLS} of ${res.data.length} tools from your MCP endpoint.`
         : "",
   };
+  catalogueCache.set(creds.mcpUrl, { at: Date.now(), cat });
+  if (catalogueCache.size > 2000) catalogueCache.clear();
+  return cat;
 }
 
 /** Present-tense label shown in the UI while a tool runs. */
