@@ -110,7 +110,7 @@ export async function POST(req: Request) {
       };
 
       // Never silently drop capability: if the MCP endpoint is down or the
-      // tool list was capped, the user should know why JARVIS seems limited.
+      // tool list was capped, the user should know why CARVIS seems limited.
       if (catalogue.note) send({ t: "note", v: catalogue.note });
 
       const messages: CanonMsg[] = [...history];
@@ -128,6 +128,7 @@ export async function POST(req: Request) {
               providerId: creds.llmProvider,
               model: creds.llmModel,
               apiKey: creds.llmKey,
+              baseUrl: creds.llmBaseUrl || undefined,
             },
             system,
             messages,
