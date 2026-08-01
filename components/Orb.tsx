@@ -6,7 +6,7 @@ import * as THREE from "three";
 export type OrbState = "idle" | "listening" | "thinking" | "speaking";
 
 /**
- * JARVIS — neural-net particle cloud.
+ * CARVIS — neural-net particle cloud.
  *
  * The thing that makes it read as a *brain* is not the particles, it's the
  * connection lines drawn between nearby ones in a filled volume — and the
