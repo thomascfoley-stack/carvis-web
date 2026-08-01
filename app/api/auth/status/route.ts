@@ -1,6 +1,7 @@
 import { allowedEmails, clearSession, inviteCode, sessionFromRequest } from "@/lib/auth";
 import { composioEnabled } from "@/lib/composio";
-import { dbEnabled, findUser, todayUsage } from "@/lib/db";
+import { dbEnabled, todayUsage, findUser } from "@/lib/db";
+import { googleConfigured } from "@/lib/google";
 
 export const runtime = "edge";
 export const dynamic = "force-dynamic";
@@ -25,6 +26,8 @@ export async function GET(req: Request) {
     // Never leak the code itself — only whether one is required.
     inviteRequired: !!inviteCode(),
     allowlistRestricted: allowedEmails().length > 0,
+    // Login needs Google. Composio is only needed for integrations.
+    google: googleConfigured(),
     composio: composioEnabled(),
     database: dbEnabled(),
     email: session?.email ?? null,

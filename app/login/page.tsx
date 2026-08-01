@@ -36,9 +36,9 @@ export default function LoginPage() {
         <div className="mark">JARVIS</div>
 
         <p>
-          A voice-first assistant. Sign in with Google to connect your calendar
-          and mail — authorisation is brokered by Composio, and your data stays
-          scoped to your own account.
+          A voice-first assistant. Sign in with your Google account — you can
+          connect your calendar, mail and other apps once you&rsquo;re in. Your data
+          stays scoped to your own account.
         </p>
 
         {error && <div className="err">{error}</div>}
