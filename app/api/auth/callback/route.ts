@@ -10,13 +10,14 @@ import {
 } from "@/lib/auth";
 import { getConnection, gmailAddress } from "@/lib/composio";
 import { findUser, upsertUser } from "@/lib/db";
+import { safeMessage } from "@/lib/redact";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 function fail(origin: string, message: string): Response {
   const url = new URL("/login", origin);
-  url.searchParams.set("error", message.slice(0, 200));
+  url.searchParams.set("error", safeMessage(message));
   return new Response(null, {
     status: 302,
     headers: { location: url.toString(), "set-cookie": clearState() },
@@ -56,8 +57,10 @@ export async function GET(req: Request) {
     const existing = await findUser(email);
     composioUserId = existing?.composio_user_id ?? state.cid;
     await upsertUser(email, composioUserId);
-  } catch (e) {
-    return fail(origin, `Could not reach the database: ${String(e).slice(0, 120)}`);
+  } catch {
+    // The exception is deliberately not surfaced: a Postgres DSN carries its
+    // password inline, and this message ends up in the address bar.
+    return fail(origin, "Could not reach the database. Please try again.");
   }
 
   const headers = new Headers({ location: new URL("/", origin).toString() });

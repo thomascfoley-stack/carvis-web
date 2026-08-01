@@ -1,6 +1,7 @@
 import { checkInvite, createState, newComposioUserId, stateCookie } from "@/lib/auth";
 import { composioEnabled, createConnectLink } from "@/lib/composio";
 import { dbEnabled, findUser } from "@/lib/db";
+import { safeMessage } from "@/lib/redact";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -9,14 +10,11 @@ export const dynamic = "force-dynamic";
  * Begins "Sign in with Google", brokered by Composio.
  *
  * Composio owns the Google OAuth application (use_composio_managed_auth), so
- * this deployment holds exactly one secret — COMPOSIO_API_KEY. There is no
+ * this deployment holds exactly one auth secret — COMPOSIO_API_KEY. There is no
  * Google Cloud project to register and no client secret of ours anywhere.
  *
  * Multi-tenant: mint a brand-new Composio user id, run the OAuth against
- * *that* id, and carry it through the round trip in a signed state cookie. The
- * callback reads the resulting Gmail profile to learn who signed in. Returning
- * users are matched by email and keep their original id, so their existing
- * connections and memory follow them.
+ * *that* id, and carry it through the round trip in a signed state cookie.
  */
 export async function GET(req: Request) {
   const url = new URL(req.url);
@@ -61,6 +59,6 @@ export async function GET(req: Request) {
 
 function bounce(origin: string, message: string): Response {
   const url = new URL("/login", origin);
-  url.searchParams.set("error", message.slice(0, 200));
+  url.searchParams.set("error", safeMessage(message));
   return new Response(null, { status: 302, headers: { location: url.toString() } });
 }

@@ -1,4 +1,4 @@
-import { authConfigured } from "@/lib/auth";
+import { authConfigured, sessionFromRequest } from "@/lib/auth";
 import { composioEnabled } from "@/lib/composio";
 import { findTts } from "@/lib/providers/tts";
 import { getSettings, kvEnabled } from "@/lib/store";
@@ -7,7 +7,8 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /** Lets the UI say exactly what's missing instead of failing silently. */
-export async function GET() {
+export async function GET(req: Request) {
+  const session = await sessionFromRequest(req);
   const s = await getSettings();
   const tts = findTts(s.tts.providerId);
 
@@ -21,19 +22,21 @@ export async function GET() {
     integrations: composioEnabled(),
     memory: kvEnabled(),
     authEnforced: authConfigured(),
-    // Diagnostic only. Reports whether a variable exists and how long it is —
-    // never any part of the value itself. "defined but length 0" is the
-    // signature of an env var created without a value.
-    env: envReport([
-      "COMPOSIO_API_KEY",
-      "DATABASE_URL",
-      "ANTHROPIC_API_KEY",
-      "OPENAI_API_KEY",
-      "MOONSHOT_API_KEY",
-      "FISH_API_KEY",
-      "JARVIS_ALLOWED_EMAILS",
-      "JARVIS_INVITE_CODE",
-    ]),
+    // Diagnostic only, and only for signed-in callers. Reports whether a
+    // variable exists and how long it is — never any part of the value. Even
+    // that much is configuration metadata, so it stays behind the session.
+    env: session
+      ? envReport([
+          "COMPOSIO_API_KEY",
+          "DATABASE_URL",
+          "ANTHROPIC_API_KEY",
+          "OPENAI_API_KEY",
+          "MOONSHOT_API_KEY",
+          "FISH_API_KEY",
+          "JARVIS_ALLOWED_EMAILS",
+          "JARVIS_INVITE_CODE",
+        ])
+      : undefined,
   });
 }
 
