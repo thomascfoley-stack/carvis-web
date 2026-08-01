@@ -1,4 +1,4 @@
-import { decryptSecret, encryptSecret, maskSecret } from "./crypto";
+import { decryptSecret, encryptSecret, maskSecret, masterKeyId } from "./crypto";
 import { dbEnabled, dbLoadCredentials, dbSaveCredentials } from "./db";
 
 /**
@@ -18,9 +18,11 @@ export type Credentials = {
   mcpUrl: string;
   /** The user's own Composio API key, for that endpoint. */
   composioKey: string;
+  /** Model provider. */
   llmProvider: string;
   llmModel: string;
   llmKey: string;
+  /** Voice provider. */
   ttsProvider: string;
   ttsVoice: string;
   ttsModel: string;
@@ -41,6 +43,9 @@ export const EMPTY: Credentials = {
 
 const SECRET_FIELDS = ["composioKey", "llmKey", "ttsKey"] as const;
 
+/** Stamp recording which master key encrypted this row. Never a credential. */
+const KID = "_kid";
+
 const fallback = new Map<string, Credentials>();
 
 export async function loadCredentials(email: string): Promise<Credentials> {
@@ -52,6 +57,7 @@ export async function loadCredentials(email: string): Promise<Credentials> {
       if (!raw) return { ...EMPTY };
 
       const out: Credentials = { ...EMPTY, ...raw } as Credentials;
+      delete (out as Record<string, unknown>)[KID];
       for (const f of SECRET_FIELDS) {
         out[f] = await decryptSecret(String(raw[f] ?? ""));
       }
@@ -81,10 +87,23 @@ export async function saveCredentials(
     next[key] = String(v).trim();
   }
 
+  // Switching provider must invalidate the key. "Blank means keep" is right
+  // when you're editing one field, and badly wrong here: an OpenAI key is not
+  // a Fish key, so keeping it sends the old provider's credential to the new
+  // provider's endpoint and every call fails with a baffling 401 — which reads
+  // as "my new key didn't take".
+  if (patch.llmProvider && patch.llmProvider !== current.llmProvider) {
+    if (!String(patch.llmKey ?? "").trim()) next.llmKey = "";
+  }
+  if (patch.ttsProvider && patch.ttsProvider !== current.ttsProvider) {
+    if (!String(patch.ttsKey ?? "").trim()) next.ttsKey = "";
+  }
+
   if (dbEnabled()) {
     try {
       const encrypted: Record<string, string> = { ...next };
       for (const f of SECRET_FIELDS) encrypted[f] = await encryptSecret(next[f]);
+      encrypted[KID] = await masterKeyId();
       await dbSaveCredentials(email, encrypted);
       return next;
     } catch {
@@ -93,6 +112,35 @@ export async function saveCredentials(
   }
   fallback.set(email, next);
   return next;
+}
+
+/**
+ * Did we store secrets that we can no longer read?
+ *
+ * This is the difference between "you never saved a key" and "your key is
+ * still here but the server can't open it any more". They look identical from
+ * the browser — both render as "not set" — and only one of them is the user's
+ * fault. Worth one extra query on a settings page nobody loads in a loop.
+ */
+export async function secretsUnreadable(email: string): Promise<boolean> {
+  if (!email || !dbEnabled()) return false;
+  try {
+    const raw = (await dbLoadCredentials(email)) as Record<string, string> | null;
+    if (!raw) return false;
+    if (!SECRET_FIELDS.some((f) => !!raw[f])) return false;
+
+    const stamp = raw[KID];
+    // Rows written before the stamp existed: prove it by attempting a decrypt.
+    if (!stamp) {
+      for (const f of SECRET_FIELDS) {
+        if (raw[f] && !(await decryptSecret(raw[f]))) return true;
+      }
+      return false;
+    }
+    return stamp !== (await masterKeyId());
+  } catch {
+    return false;
+  }
 }
 
 /** True once the user has supplied everything the app needs to function. */

@@ -19,6 +19,31 @@ const MASTER = (
 export const encryptionConfigured = () => MASTER.length >= 16;
 
 let keyPromise: Promise<CryptoKey> | null = null;
+let kidPromise: Promise<string> | null = null;
+
+/**
+ * A short, non-reversible stamp identifying *which* master key was in force.
+ *
+ * The master key falls back to COMPOSIO_API_KEY, and people rotate those. When
+ * that happens every stored secret becomes undecryptable — and because
+ * decryptSecret deliberately never throws, the failure looks exactly like
+ * "the key was never saved". Stamping the row lets us tell the difference and
+ * say so, instead of leaving someone re-entering keys that were saving fine.
+ */
+export function masterKeyId(): Promise<string> {
+  if (!kidPromise) {
+    kidPromise = (async () => {
+      const digest = await crypto.subtle.digest(
+        "SHA-256",
+        new TextEncoder().encode(`kid:${MASTER}`),
+      );
+      return Array.from(new Uint8Array(digest).slice(0, 6))
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
+    })();
+  }
+  return kidPromise;
+}
 
 function masterKey(): Promise<CryptoKey> {
   if (!keyPromise) {
