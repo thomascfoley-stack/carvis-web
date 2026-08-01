@@ -5,6 +5,7 @@ import Link from "next/link";
 import Orb, { type OrbState } from "./Orb";
 import { createSentenceStream } from "@/lib/sentences";
 import { Speaker } from "@/lib/speaker";
+import { getMicAnalyser, startMicAnalyser, stopMicAnalyser } from "@/lib/mic";
 import { Listener, speechSupported } from "@/lib/voice";
 
 type Turn = { role: "user" | "assistant"; text: string };
@@ -59,7 +60,10 @@ export default function Jarvis() {
     return speaker.onSpeakingChange(setSpeaking);
   }, []);
 
-  const level = useCallback(() => speakerRef.current?.level() ?? 0, []);
+  const outputAnalyser = useCallback(() => speakerRef.current?.getAnalyser() ?? null, []);
+  // Muting must also freeze the visual — a cloud reacting to a muted mic
+  // would be actively misleading about whether you're being heard.
+  const inputAnalyser = useCallback(() => (mutedRef.current ? null : getMicAnalyser()), []);
 
   const orbState: OrbState = speaking
     ? "speaking"
@@ -209,6 +213,8 @@ export default function Jarvis() {
 
   const beginSession = useCallback(() => {
     speakerRef.current?.unlock();
+    // Frequency data only — nothing recorded, nothing leaves the browser.
+    void startMicAnalyser();
     setStarted(true);
 
     if (!supported) return;
@@ -243,6 +249,7 @@ export default function Jarvis() {
     return () => {
       listenerRef.current?.stop();
       speakerRef.current?.stop();
+      stopMicAnalyser();
     };
   }, []);
 
@@ -261,7 +268,11 @@ export default function Jarvis() {
       </header>
 
       <div className="orb-wrap">
-        <Orb state={orbState} level={level} />
+        <Orb
+          state={orbState}
+          getOutputAnalyser={outputAnalyser}
+          getInputAnalyser={inputAnalyser}
+        />
 
         {!started && (
           <button className="ignition" onClick={beginSession}>
@@ -321,6 +332,7 @@ export default function Jarvis() {
           const text = typed;
           setTyped("");
           speakerRef.current?.unlock();
+          void startMicAnalyser();
           setStarted(true);
           void send(text);
         }}
