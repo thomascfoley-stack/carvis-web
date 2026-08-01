@@ -3,7 +3,7 @@ import { composioEnabled } from "@/lib/composio";
 import { findTts } from "@/lib/providers/tts";
 import { getSettings, kvEnabled } from "@/lib/store";
 
-export const runtime = "edge";
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /** Lets the UI say exactly what's missing instead of failing silently. */
