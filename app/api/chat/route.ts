@@ -4,6 +4,7 @@ import { consumeMessage, dbEnabled, findUser, recordFailure } from "@/lib/db";
 import { loadMemories } from "@/lib/memory";
 import { systemPrompt } from "@/lib/prompt";
 import { streamLLM, type CanonMsg, type ToolCall } from "@/lib/providers/llm";
+import { redact } from "@/lib/redact";
 import { getSettings } from "@/lib/store";
 import { runTool, toolCatalogue, toolLabel } from "@/lib/tools";
 
@@ -69,7 +70,7 @@ export async function POST(req: Request) {
       void recordFailure({
         node: "chat.quota",
         errorClass: "QuotaCheckFailed",
-        message: String(e).slice(0, 500),
+        message: redact(e).slice(0, 500),
       });
     }
   }
@@ -125,7 +126,8 @@ export async function POST(req: Request) {
             } else if (ev.type === "tool_calls") {
               calls = ev.calls;
             } else if (ev.type === "error") {
-              send({ t: "error", v: ev.message });
+              // Everything on this channel is displayed in the browser.
+              send({ t: "error", v: redact(ev.message) });
               failed = true;
               void recordFailure({
                 node: `llm.${settings.llm.providerId}`,
@@ -142,16 +144,17 @@ export async function POST(req: Request) {
 
           const results = await Promise.all(
             calls.map(async (c) => {
-              const content = await runTool(c.name, c.input ?? {}, {
+              const raw = await runTool(c.name, c.input ?? {}, {
                 tz,
                 email: session.email,
                 cid: session.cid,
                 signal: req.signal,
               });
+              const content = redact(raw);
               // Tool failures come back as prose so the model can explain
               // them, which means this is the only place to notice them.
               if (
-                /^(Calendar unavailable|Mail unavailable|Search failed|That failed|Could not create)/.test(
+                /^(Calendar unavailable|Mail unavailable|Search failed|That failed|Could not create|Tool error)/.test(
                   content,
                 )
               ) {
@@ -174,7 +177,7 @@ export async function POST(req: Request) {
         send({ t: "done" });
       } catch (e: any) {
         if (e?.name !== "AbortError") {
-          send({ t: "error", v: String(e?.message ?? e).slice(0, 300) });
+          send({ t: "error", v: redact(e?.message ?? e).slice(0, 300) });
           void recordFailure({
             node: "chat.stream",
             errorClass: e?.name ?? "Error",
