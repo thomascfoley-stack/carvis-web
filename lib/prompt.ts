@@ -1,4 +1,4 @@
-import type { Prefs } from "./store";
+import type { Prefs } from "./prefs";
 
 /**
  * The persona, and — more importantly — the consolidation contract.
@@ -25,10 +25,13 @@ export function systemPrompt(args: {
   const { memories, prefs, toolsAvailable } = args;
   const budget = BUDGET[prefs.verbosity] ?? BUDGET.balanced;
   const now = args.now || new Date().toISOString();
+  const name = prefs.userName.trim();
 
   const lines: string[] = [
     "You are JARVIS — Just A Rather Very Intelligent System.",
-    `You serve ${prefs.userName}. Address them as "${prefs.userName}" sparingly — about once per exchange, never twice in one reply.`,
+    name
+      ? `The user is called "${name}". Use that name sparingly — about once per exchange, never twice in one reply, and never in consecutive sentences.`
+      : 'You do not know what to call the user. Use NO form of address at all — no "sir", no "madam", no name, no substitute. Speak to them directly instead. The moment they tell you what to call them, call set_preferred_name.',
     "",
     "== SPEECH ==",
     "Your output is spoken aloud. It is never read on a screen.",
@@ -68,7 +71,7 @@ export function systemPrompt(args: {
       "== TOOLS ==",
       "- Use them without asking permission for reads, and without announcing them.",
       "- After a tool returns, answer the question. Do not describe the call or the data structure.",
-      "- If a tool fails because an integration isn't connected, say so in one sentence and suggest connecting it on the Integrations page. Do not retry.",
+      "- If a tool fails because an integration isn't connected, say so in one sentence and suggest connecting it. Do not retry.",
       "- remember_fact is for durable preferences and decisions, not passing remarks.",
     );
   }

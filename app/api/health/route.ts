@@ -1,55 +1,37 @@
-import { authConfigured, sessionFromRequest } from "@/lib/auth";
+import { sessionFromRequest } from "@/lib/auth";
 import { composioEnabled } from "@/lib/composio";
-import { findTts } from "@/lib/providers/tts";
-import { getSettings, kvEnabled } from "@/lib/store";
+import { isOnboarded, loadCredentials } from "@/lib/credentials";
+import { encryptionConfigured } from "@/lib/crypto";
+import { dbEnabled } from "@/lib/db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** Lets the UI say exactly what's missing instead of failing silently. */
+/**
+ * Deployment health, plus — for a signed-in caller — whether *their* own keys
+ * are in place. Nothing here reveals a value, only presence.
+ */
 export async function GET(req: Request) {
   const session = await sessionFromRequest(req);
-  const s = await getSettings();
-  const tts = findTts(s.tts.providerId);
 
+  const base = {
+    // This deployment's Composio key brokers Google sign-in only. It grants
+    // no access to any user's data; integrations use each user's own endpoint.
+    signInBroker: composioEnabled(),
+    database: dbEnabled(),
+    encryption: encryptionConfigured(),
+  };
+
+  if (!session) return Response.json({ ...base, signedIn: false });
+
+  const creds = await loadCredentials(session.email);
   return Response.json({
-    llm: { provider: s.llm.providerId, model: s.llm.model, ready: !!s.llm.apiKey },
-    tts: {
-      provider: s.tts.providerId,
-      ready: tts.needsKey ? !!s.tts.apiKey : true,
-      onDevice: tts.id === "browser",
-    },
-    integrations: composioEnabled(),
-    memory: kvEnabled(),
-    authEnforced: authConfigured(),
-    // Diagnostic only, and only for signed-in callers. Reports whether a
-    // variable exists and how long it is — never any part of the value. Even
-    // that much is configuration metadata, so it stays behind the session.
-    env: session
-      ? envReport([
-          "COMPOSIO_API_KEY",
-          "DATABASE_URL",
-          "ANTHROPIC_API_KEY",
-          "OPENAI_API_KEY",
-          "MOONSHOT_API_KEY",
-          "FISH_API_KEY",
-          "JARVIS_ALLOWED_EMAILS",
-          "JARVIS_INVITE_CODE",
-        ])
-      : undefined,
+    ...base,
+    signedIn: true,
+    email: session.email,
+    onboarded: isOnboarded(creds),
+    mcp: !!(creds.mcpUrl && creds.composioKey),
+    model: { provider: creds.llmProvider, model: creds.llmModel, ready: !!creds.llmKey },
+    voice: { provider: creds.ttsProvider, ready: !!creds.ttsKey },
   });
-}
-
-function envReport(names: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const n of names) {
-    const raw = process.env[n];
-    out[n] =
-      raw === undefined
-        ? "missing"
-        : raw.trim().length === 0
-          ? "EMPTY (defined, no value)"
-          : `ok (${raw.trim().length} chars)`;
-  }
-  return out;
 }

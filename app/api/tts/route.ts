@@ -1,17 +1,16 @@
 import { sessionFromRequest } from "@/lib/auth";
-import { addTtsChars, dbEnabled } from "@/lib/db";
+import { loadCredentials } from "@/lib/credentials";
 import { synthesize } from "@/lib/providers/tts";
-import { getSettings } from "@/lib/store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
- * Voice proxy.
+ * Voice proxy, billed to the caller's own key.
  *
  * Called once per *sentence* rather than once per reply, so the first sentence
  * can already be speaking while the rest of the answer is still generating.
- * Keeping provider keys server-side is the other reason this exists.
+ * The key never reaches the browser — that's the other reason this exists.
  */
 export async function POST(req: Request) {
   const session = await sessionFromRequest(req);
@@ -27,17 +26,25 @@ export async function POST(req: Request) {
   const text = String(body?.text ?? "").trim().slice(0, 1500);
   if (!text) return new Response("No text", { status: 400 });
 
-  // Metered but not blocked: cutting audio mid-reply is a worse failure than
-  // a slightly over-quota day, and the message cap already bounds the volume.
-  if (dbEnabled()) {
-    void addTtsChars(session.email, text.length).catch(() => undefined);
+  const creds = await loadCredentials(session.email);
+
+  // 409 tells the client to use the on-device voice rather than fail silently.
+  if (!creds.ttsKey && creds.ttsProvider !== "browser") {
+    return Response.json({ error: "browser-tts" }, { status: 409 });
   }
 
-  const settings = await getSettings();
-  const result = await synthesize(text, settings.tts, req.signal);
+  const result = await synthesize(
+    text,
+    {
+      providerId: creds.ttsProvider,
+      voiceId: creds.ttsVoice,
+      model: creds.ttsModel,
+      apiKey: creds.ttsKey,
+    },
+    req.signal,
+  );
 
   if (!result.ok) {
-    // Signals the client to fall back to the on-device Web Speech voice.
     const status = result.error === "browser-tts" ? 409 : 502;
     return Response.json({ error: result.error }, { status });
   }
