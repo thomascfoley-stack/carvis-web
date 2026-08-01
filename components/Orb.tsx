@@ -8,14 +8,14 @@ export type OrbState = "idle" | "listening" | "thinking" | "speaking";
 /**
  * CARVIS — neural-net particle cloud.
  *
- * The thing that makes it read as a *brain* is not the particles, it's the
- * connection lines drawn between nearby ones in a filled volume — and the
- * electrons that run along them while it thinks.
+ * Faithful to the original macOS build, because the thing that makes it read
+ * as a *brain* is not the particles, it's the connection lines drawn between
+ * nearby ones — and the electrons that run along them while it thinks. A
+ * hollow shell of points looks like a planet; a filled volume with edges looks
+ * like a mind.
  *
- * Motion is deliberately restrained. An earlier version drove brightness
- * straight from per-frame FFT output, which changes at up to 60Hz: that is a
- * strobe, and a photosensitive-seizure risk. Every visual response now comes
- * from a heavily low-passed envelope, and prefers-reduced-motion is honoured.
+ * Reacts to both voices: the assistant's output and, when granted, your
+ * microphone — so it's alive while you speak, not only while it answers.
  */
 export default function Orb({
   state,
@@ -52,6 +52,7 @@ export default function Orb({
 
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(45, 1, 1, 1000);
+    // Closer than the original's 80: the cloud should dominate the screen.
     camera.position.z = 40;
 
     const N = 2200;
@@ -86,8 +87,6 @@ export default function Orb({
       depthWrite: false,
     });
     const points = new THREE.Points(geo, mat);
-    // Bounding spheres are computed once from an all-zero buffer, so anything
-    // filled in later would be frustum-culled. These are always on screen.
     points.frustumCulled = false;
     scene.add(points);
 
@@ -131,11 +130,7 @@ export default function Orb({
     electrons.frustumCulled = false;
     scene.add(electrons);
 
-    type Electron = {
-      sx: number; sy: number; sz: number;
-      ex: number; ey: number; ez: number;
-      t: number; speed: number;
-    };
+    type Electron = { sx: number; sy: number; sz: number; ex: number; ey: number; ez: number; t: number; speed: number };
     const active: Electron[] = [];
     let connections: number[][] = [];
 
@@ -184,8 +179,6 @@ export default function Orb({
       const t = clock.getElapsedTime();
       const s = stateRef.current;
 
-      // Connection count scales with density (N/R^3), so a tighter cloud webs
-      // up dramatically. Thinking is the densest, and it shows.
       switch (s) {
         case "idle":
           targetRadius = 21; targetSpeed = 0.2; targetBright = 0.5; targetSize = 0.36;
@@ -208,8 +201,8 @@ export default function Orb({
       lineAmount += (targetLineAmount - lineAmount) * 0.02;
       eRate += (targetERate - eRate) * 0.02;
 
-      // A state change gives the cloud a gentle tumble; it reads as the thing
-      // reacting rather than a value being interpolated.
+      // A state change throws the whole cloud into a slow tumble; it reads as
+      // the thing physically reacting rather than a value being interpolated.
       if (s !== lastState) { transitionEnergy = 1; lastState = s; }
       transitionEnergy *= 0.992;
       if (transitionEnergy > 0.05 && !prefersReduced) {
@@ -262,11 +255,8 @@ export default function Orb({
       electrons.rotation.set(spinX, spinY, spinZ);
       points.position.z = lines.position.z = electrons.position.z = cloudZ;
 
-      // Shallow modulation depth, with a floor: the cloud never blinks out.
       mat.opacity = Math.min(0.95, curBright + 0.18 + bass * 0.12);
       mat.size = curSize + mid * 0.12;
-      // Thin additive lines need near-full alpha to register against black;
-      // visual weight is controlled by density, not opacity.
       lineMat.opacity = Math.min(0.9, lineAmount * (1.1 + bass * 0.18));
 
       /* --------------------------- particles --------------------------- */
@@ -319,7 +309,7 @@ export default function Orb({
 
         const maxDist = 6.4 * (1 + bass * 0.5);
         const maxSq = maxDist * maxDist;
-        // Sampling every Nth particle keeps this O(430^2) rather than
+        // Sampling every Nth particle keeps this O(600^2) rather than
         // O(2200^2) — the visual difference is nil, the cost difference isn't.
         const step = Math.max(1, Math.floor(N / 430));
 
