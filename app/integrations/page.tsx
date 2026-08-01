@@ -60,6 +60,9 @@ export default function IntegrationsPage() {
     setError("");
     try {
       if (t.connected && t.connectionId) {
+        // On touch there is no hover state to warn that tapping a connected
+        // tile removes it — one stray tap must not kill an integration.
+        if (!window.confirm(`Disconnect ${t.name}?`)) return;
         const res = await fetch(`/api/integrations/connect?id=${encodeURIComponent(t.connectionId)}`, {
           method: "DELETE",
         });
@@ -129,9 +132,14 @@ export default function IntegrationsPage() {
 
       <input
         className="search"
+        type="search"
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         placeholder="Search all toolkits — Slack, Notion, Snowflake, Stripe…"
+        autoCapitalize="none"
+        autoCorrect="off"
+        spellCheck={false}
+        enterKeyHint="search"
       />
 
       {!data && <p className="sub">Loading…</p>}
