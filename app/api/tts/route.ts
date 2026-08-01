@@ -46,6 +46,7 @@ export async function POST(req: Request) {
       voiceId,
       model,
       apiKey: creds.ttsKey,
+      baseUrl: creds.ttsBaseUrl || undefined,
     },
     req.signal,
   );

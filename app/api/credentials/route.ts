@@ -8,6 +8,7 @@ import {
 import { encryptionConfigured } from "@/lib/crypto";
 import { dbEnabled } from "@/lib/db";
 import { forgetSession, listTools } from "@/lib/mcp";
+import { forgetCatalogue } from "@/lib/tools";
 import { loadPrefs, savePrefs } from "@/lib/prefs";
 import { LLM_PROVIDERS } from "@/lib/providers/llm";
 import { ttsCatalogue } from "@/lib/providers/tts";
@@ -49,7 +50,12 @@ export async function POST(req: Request) {
   const session = await sessionFromRequest(req);
   if (!session) return Response.json({ error: "Not signed in." }, { status: 401 });
 
-  if (!dbEnabled()) {
+  // The refusal exists because in-memory credentials silently vanish when a
+  // serverless instance recycles — worse than an honest error. The escape
+  // hatch is for the test harness, whose server is one long-lived process.
+  const memoryStoreOk =
+    (process.env.CARVIS_ALLOW_MEMORY_CREDENTIALS || "").trim() === "1";
+  if (!dbEnabled() && !memoryStoreOk) {
     return Response.json(
       { error: "No database attached, so credentials can't be stored." },
       { status: 503 },
@@ -84,14 +90,20 @@ export async function POST(req: Request) {
     llmProvider: body?.llmProvider,
     llmModel: body?.llmModel,
     llmKey: body?.llmKey,
+    llmBaseUrl: body?.llmBaseUrl,
     ttsProvider: body?.ttsProvider,
     ttsVoice: body?.ttsVoice,
     ttsModel: body?.ttsModel,
     ttsKey: body?.ttsKey,
+    ttsBaseUrl: body?.ttsBaseUrl,
   });
 
-  // The endpoint may have changed; drop any cached MCP handshake.
-  if (saved.mcpUrl) forgetSession(saved.mcpUrl);
+  // The endpoint or key may have changed; drop the cached MCP handshake and
+  // the cached tool catalogue so the next turn reflects the new credentials.
+  if (saved.mcpUrl) {
+    forgetSession(saved.mcpUrl);
+    forgetCatalogue(saved.mcpUrl);
+  }
 
   const prefs = await loadPrefs(session.email);
   return Response.json({ credentials: maskCredentials(saved), prefs });
