@@ -21,5 +21,32 @@ export async function GET() {
     integrations: composioEnabled(),
     memory: kvEnabled(),
     authEnforced: authConfigured(),
+    // Diagnostic only. Reports whether a variable exists and how long it is —
+    // never any part of the value itself. "defined but length 0" is the
+    // signature of an env var created without a value.
+    env: envReport([
+      "COMPOSIO_API_KEY",
+      "DATABASE_URL",
+      "ANTHROPIC_API_KEY",
+      "OPENAI_API_KEY",
+      "MOONSHOT_API_KEY",
+      "FISH_API_KEY",
+      "JARVIS_ALLOWED_EMAILS",
+      "JARVIS_INVITE_CODE",
+    ]),
   });
+}
+
+function envReport(names: string[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const n of names) {
+    const raw = process.env[n];
+    out[n] =
+      raw === undefined
+        ? "missing"
+        : raw.trim().length === 0
+          ? "EMPTY (defined, no value)"
+          : `ok (${raw.trim().length} chars)`;
+  }
+  return out;
 }
