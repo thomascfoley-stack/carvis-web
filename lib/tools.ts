@@ -201,18 +201,30 @@ export function toolLabel(name: string): string {
   return labels[name] ?? "Working";
 }
 
+/** Everything a tool needs to act as, and only as, the calling tenant. */
+export type ToolContext = {
+  tz: string;
+  /** Identifies the tenant for memory. */
+  email: string;
+  /** The caller's own Composio user id — never a shared default. */
+  cid: string;
+  signal?: AbortSignal;
+};
+
 export async function runTool(
   name: string,
   input: Record<string, any>,
-  ctx: { tz: string; signal?: AbortSignal },
+  ctx: ToolContext,
 ): Promise<string> {
   try {
     switch (name) {
       case "remember_fact":
-        return (await saveMemory(String(input.fact ?? ""))) ? "Saved." : "Nothing to save.";
+        return (await saveMemory(ctx.email, String(input.fact ?? "")))
+          ? "Saved."
+          : "Nothing to save.";
 
       case "recall_facts": {
-        const hits = await searchMemories(String(input.query ?? ""));
+        const hits = await searchMemories(ctx.email, String(input.query ?? ""));
         return hits.length ? hits.join("\n") : "No stored facts match that.";
       }
 
@@ -229,6 +241,7 @@ export async function runTool(
             maxResults: 25,
             timeZone: ctx.tz,
           },
+          ctx.cid,
           ctx.signal,
         );
         if (!res.ok) return `Calendar unavailable: ${res.error}`;
@@ -250,6 +263,7 @@ export async function runTool(
             ...(input.description ? { description: String(input.description) } : {}),
             ...(input.location ? { location: String(input.location) } : {}),
           },
+          ctx.cid,
           ctx.signal,
         );
         return res.ok ? "Event created." : `Could not create the event: ${res.error}`;
@@ -264,6 +278,7 @@ export async function runTool(
             verbose: false,
             include_payload: false,
           },
+          ctx.cid,
           ctx.signal,
         );
         if (!res.ok) return `Mail unavailable: ${res.error}`;
@@ -274,6 +289,7 @@ export async function runTool(
         const res = await composioExecute(
           "COMPOSIO_SEARCH_WEB",
           { query: String(input.query ?? "") },
+          ctx.cid,
           ctx.signal,
         );
         return res.ok ? condense(res.data, 2500) : `Search failed: ${res.error}`;
@@ -282,7 +298,12 @@ export async function runTool(
       case "run_integration": {
         const slug = String(input.tool_slug ?? "").trim().toUpperCase();
         if (!slug) return "No tool slug given.";
-        const res = await composioExecute(slug, (input.arguments ?? {}) as any, ctx.signal);
+        const res = await composioExecute(
+          slug,
+          (input.arguments ?? {}) as any,
+          ctx.cid,
+          ctx.signal,
+        );
         return res.ok ? condense(res.data, 2500) : `That failed: ${res.error}`;
       }
 
