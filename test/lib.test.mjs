@@ -9,7 +9,14 @@ import { redact, safeMessage } from "../lib/redact.ts";
 import { defineNode } from "../lib/graph.ts";
 import { safeSampleJson } from "../lib/db.ts";
 import { createSentenceStream } from "../lib/sentences.ts";
-import { looksLikeEcho, isRealInterruption } from "../lib/voice.ts";
+import {
+  looksLikeEcho,
+  isRealInterruption,
+  extractUserTail,
+  stripBargePrefix,
+  isBareCommand,
+  isBackchannel,
+} from "../lib/voice.ts";
 import {
   encryptSecret,
   decryptSecret,
@@ -115,6 +122,95 @@ export async function libSuites(ctx) {
   t("looksLikeEcho still catches straight playback", () => {
     ok(looksLikeEcho("twelve unread emails three of them matter", reply));
     ok(!looksLikeEcho("please book me a table for tonight", reply));
+  });
+
+  /* --------------------------- full duplex capture ---------------------- */
+  section("full duplex: barge capture");
+
+  t("extractUserTail finds the user's words after the echo", () => {
+    const live = "twelve unread emails three of them matter actually cancel my afternoon";
+    eq(extractUserTail(live, reply), "actually cancel my afternoon");
+  });
+  t("extractUserTail sheds the leading echo run", () => {
+    const live = "and the standup moved to no cancel it";
+    const said = extractUserTail(live, reply);
+    ok(said.includes("cancel it"), said);
+    ok(!said.includes("standup"), said);
+  });
+  t("extractUserTail returns empty for pure echo", () => {
+    eq(extractUserTail("twelve unread emails three of them matter", reply), "");
+  });
+  // The failure that matters most: silently amputating the user's sentence.
+  // A reply word appearing INSIDE their request must not restart the echo run.
+  t("a reply word inside the request does not eat the request", () => {
+    const live = "twelve unread emails three of them matter actually cancel the afternoon";
+    const said = extractUserTail(live, reply);
+    ok(said.includes("cancel the afternoon"), said);
+  });
+  t("morphological variants never eat the user's verb", () => {
+    // "cancel" is a substring of "cancelled" — exact-word matching only.
+    const spoken = "The standup is cancelled, and your afternoon is clear.";
+    const said = extractUserTail("the standup is cancelled and cancel my dentist appointment too", spoken);
+    ok(said.startsWith("cancel my dentist"), said);
+  });
+  t("extractUserTail keeps a user word that merely resembles the reply", () => {
+    const live = "standup moved to two thirty move it to friday instead";
+    const said = extractUserTail(live, reply);
+    ok(said.includes("move it to friday instead"), said);
+  });
+
+  t("stripBargePrefix keeps everything after the recorded boundary", () => {
+    const utter = "three of them matter and the standup what about tomorrow then";
+    eq(stripBargePrefix(utter, 7, reply), "what about tomorrow then");
+  });
+  t("stripBargePrefix survives a boundary past the end", () => {
+    const utter = "twelve unread emails check my calendar";
+    ok(stripBargePrefix(utter, 40, reply).includes("check my calendar"));
+  });
+  t("stripBargePrefix never cuts into user speech when the echo collapses", () => {
+    // Recognizer revised the echo shorter than it was at barge time: the
+    // recorded index now points mid-sentence. Smaller estimate must win.
+    const utter = "the standup moved cancel my dentist appointment on friday";
+    eq(stripBargePrefix(utter, 7, reply), "cancel my dentist appointment on friday");
+  });
+  t("stripBargePrefix keeps a pure-user final intact", () => {
+    // Chrome dropped the echo prefix entirely in the final revision.
+    eq(stripBargePrefix("move the standup to friday", 40, reply), "move the standup to friday");
+  });
+
+  t("a lone command still interrupts through morphological echo", () => {
+    // "I stopped the sync" must not make "stop" unusable.
+    ok(isRealInterruption("stop", "I stopped the sync for you."));
+    ok(isRealInterruption("wait", "I am waiting on the calendar API."));
+    ok(isRealInterruption("pause", "I paused the sync job."));
+    // Whole-word echo of the command itself still suppresses it.
+    ok(!isRealInterruption("stop", "I will stop reading the list there."));
+  });
+
+  t("bare commands are commands, not messages", () => {
+    for (const s of ["stop", "Stop.", "okay stop", "wait", "hold on", "never mind", "shut up", "cancel that", "stop it now", "stop stop stop stop stop", "okay okay stop stop stop"]) {
+      ok(isBareCommand(s), s);
+    }
+  });
+  t("commands with content are messages", () => {
+    for (const s of ["stop sending me emails", "wait until friday to reply", "cancel my three o'clock", "hold the meeting anyway"]) {
+      ok(!isBareCommand(s), s);
+    }
+  });
+  t("'on' or 'up' alone are not commands", () => {
+    ok(!isBareCommand("on"));
+    ok(!isBareCommand("up up"));
+  });
+
+  t("acknowledgements are backchannel, not requests", () => {
+    for (const s of ["ok", "okay cool", "got it", "yeah", "sounds good", "nice", "thank you"]) {
+      ok(isBackchannel(s), s);
+    }
+  });
+  t("real speech is not backchannel", () => {
+    for (const s of ["ok check my email", "yes but move it", "what about tomorrow", "why"]) {
+      ok(!isBackchannel(s), s);
+    }
   });
 
   /* ------------------------------ sentences ----------------------------- */

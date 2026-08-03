@@ -41,7 +41,36 @@ export class Speaker {
 
   /** Chunks that finished playing, plus how far into the current one we are. */
   private spoken: string[] = [];
-  private playing: { text: string; startedAt: number; duration: number } | null = null;
+  private playing: { text: string; startedAt: number; duration: number; aside: boolean } | null =
+    null;
+
+  /**
+   * Everything that came out of the speakers recently, asides included —
+   * the reference the microphone's echo detection compares against.
+   *
+   * Deliberately separate from `spoken`: that one is the *answer* transcript
+   * (asides excluded, reset each turn) and using it for echo made progress
+   * lines invisible, so CARVIS heard its own "still working on that" as an
+   * interruption. This buffer is never reset by a new turn — the recognizer
+   * finalises the previous reply's echo a beat after the next turn starts.
+   */
+  private audible: string[] = [];
+
+  private remember(text: string): void {
+    this.audible.push(text);
+    let total = this.audible.join(" ").length;
+    while (this.audible.length > 1 && total > 900) {
+      total -= (this.audible.shift() ?? "").length + 1;
+    }
+  }
+
+  /** What the microphone may be hearing back. Echo detection only. */
+  audibleText(): string {
+    const parts = [...this.audible];
+    if (this.playing) parts.push(this.playing.text);
+    if (this.deviceUtterance) parts.push(this.deviceUtterance.text);
+    return parts.join(" ").slice(-900);
+  }
 
   /** Set when the server tells us to use the on-device voice instead. */
   private useBrowserVoice = false;
@@ -137,6 +166,32 @@ export class Speaker {
 
   get isSpeaking(): boolean {
     return this.speaking;
+  }
+
+  /**
+   * An answer is being delivered — playing, queued, or still being fetched.
+   *
+   * `isSpeaking` is false for the whole fetch-and-decode window (Fish can
+   * take a second), so keying "is CARVIS answering?" on it treated a reply
+   * whose audio hadn't arrived yet as idle.
+   */
+  get answerInFlight(): boolean {
+    if (this.deviceUtterance) return true;
+    if (this.playing && !this.playing.aside) return true;
+    return this.queue.some((q) => !q.aside);
+  }
+
+  /**
+   * Resolves once nothing is playing or queued, or after `timeoutMs`. Lets a
+   * background turn wait for a gap rather than wedging its report between
+   * two sentences of the conversation that replaced it.
+   */
+  async whenIdle(timeoutMs = 20_000): Promise<void> {
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+      if (!this.speaking && !this.queue.length) return;
+      await new Promise((r) => setTimeout(r, 200));
+    }
   }
 
   onSpeakingChange(fn: Listener): () => void {
@@ -282,8 +337,10 @@ export class Speaker {
 
         const head = this.queue[0];
         const buf = await head.job;
-        this.queue.shift();
+        // Check the generation BEFORE consuming: stop() replaces the queue,
+        // so a shift here would eat the *next* turn's first sentence.
         if (gen !== this.generation) break;
+        this.queue.shift();
         if (!buf || !this.ctx || !this.analyser) continue;
 
         this.setSpeaking(true);
@@ -299,6 +356,7 @@ export class Speaker {
             text: head.text,
             startedAt: this.ctx!.currentTime,
             duration: buf.duration,
+            aside: head.aside,
           };
           this.current = src;
           src.start();
@@ -306,6 +364,7 @@ export class Speaker {
 
         if (gen === this.generation) {
           if (!head.aside) this.spoken.push(head.text);
+          this.remember(head.text);
           this.playing = null;
         }
       }
@@ -314,6 +373,12 @@ export class Speaker {
       if (gen === this.generation && !this.queue.length) {
         this.setSpeaking(false);
         this.playing = null;
+      }
+      // A drain that outlived its generation was holding the `draining` flag,
+      // so chunks enqueued meanwhile found no active drain and would sit
+      // there mute. Hand the queue over to a drain that owns it.
+      if (gen !== this.generation && this.queue.length) {
+        void this.drain(this.generation);
       }
     }
   }
@@ -347,6 +412,7 @@ export class Speaker {
         this.spoken.push(text);
         this.deviceUtterance = null;
       }
+      this.remember(text);
       if (!window.speechSynthesis.speaking) this.setSpeaking(false);
     };
     utter.onend = finish;
@@ -374,7 +440,7 @@ export class Speaker {
       return parts.join(" ").trim();
     }
 
-    if (this.playing && this.ctx) {
+    if (this.playing && !this.playing.aside && this.ctx) {
       const elapsed = this.ctx.currentTime - this.playing.startedAt;
       const fraction = Math.max(0, Math.min(1, elapsed / (this.playing.duration || 1)));
       const words = this.playing.text.split(/\s+/);
@@ -393,6 +459,11 @@ export class Speaker {
 
   /** Barge-in: kill everything immediately. */
   stop(): void {
+    // Whatever was mid-air still reached the microphone, so it stays in the
+    // echo reference even though the user never heard the end of it.
+    if (this.playing) this.remember(this.playing.text);
+    if (this.deviceUtterance) this.remember(this.deviceUtterance.text);
+
     this.generation++;
     this.queue = [];
     this.deviceUtterance = null;

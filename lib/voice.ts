@@ -4,10 +4,11 @@
  * Chrome/Edge only — Safari (desktop and iOS) doesn't implement it, so the UI
  * always keeps a text input available rather than pretending otherwise.
  *
- * Barge-in is the subtle part. The microphone hears the assistant's own voice
- * through the speakers, so naive interrupt detection makes it cut itself off
- * constantly. We require a couple of real words that don't look like an echo of
- * what's currently being said.
+ * The design goal is full duplex: the microphone stays live while CARVIS
+ * speaks. The recognizer hears the assistant's own voice through the
+ * speakers, so everything here is about telling the user's words apart from
+ * that echo — well enough to stop on a real interruption AND to answer the
+ * words that did the interrupting, instead of making the user repeat them.
  */
 
 type Handlers = {
@@ -59,8 +60,93 @@ export function isRealInterruption(recent: string, spoken: string): boolean {
   if (nonEcho.length >= 2) return true;
 
   // …or a single command word — unless the assistant itself just said it.
+  // Whole-word match only: "I stopped the sync" must not make the user's
+  // "stop" uninterruptable.
   const cmd = COMMANDS.exec(recent.toLowerCase());
-  return !!cmd && !tail.includes(cmd[1]);
+  if (!cmd) return false;
+  return !new RegExp(`\\b${cmd[1].replace(/ /g, "\\s+")}\\b`).test(tail);
+}
+
+const bare = (w: string) => w.toLowerCase().replace(/[^a-z0-9']/g, "");
+
+/** Words that end a reply without being a new request in themselves. */
+const COMMAND_WORDS = new Set([
+  "stop", "wait", "pause", "hold", "hang", "on", "up", "shut",
+  "enough", "quiet", "never", "mind", "nevermind", "cancel",
+]);
+/** Padding that can surround a command without changing what it is. */
+const POLITE = new Set([
+  "ok", "okay", "carvis", "jarvis", "please", "now", "just",
+  "no", "oh", "hey", "that", "it",
+]);
+
+/**
+ * "Stop." / "okay hold on" / "stop stop stop stop stop" — an instruction to
+ * shut up, not a message. These must never be forwarded to the model, which
+ * would gamely answer them. No length cap: a frustrated repeat is still the
+ * same instruction, and the every-word check bounds it anyway.
+ */
+export function isBareCommand(text: string): boolean {
+  const words = text.split(/\s+/).map(bare).filter(Boolean);
+  if (!words.length) return false;
+  if (!words.some((w) => COMMAND_WORDS.has(w) && w.length > 2)) return false;
+  return words.every((w) => COMMAND_WORDS.has(w) || POLITE.has(w));
+}
+
+/**
+ * Mid-job acknowledgements — "ok", "got it", "nice" — are the user talking
+ * WITH the assistant, not redirecting it. Swallowing them beats cancelling a
+ * live Salesforce query because someone reacted to a progress line.
+ */
+const ACKS = new Set([
+  "ok", "okay", "cool", "yes", "yeah", "yep", "sure", "right", "alright",
+  "fine", "nice", "great", "good", "perfect", "thanks", "thank", "you",
+  "got", "it", "gotcha", "mhm", "mm", "hmm", "uh", "huh", "oh", "i", "see",
+  "sounds", "understood", "cheers",
+]);
+export function isBackchannel(text: string): boolean {
+  const words = text.split(/\s+/).map(bare).filter(Boolean);
+  return words.length > 0 && words.length <= 3 && words.every((w) => ACKS.has(w));
+}
+
+/**
+ * Length of the contiguous echo prefix: how many leading words are exact
+ * words the assistant just said. Echo transcribes near-verbatim, so exact
+ * matching is right — substring tests ("cancel" inside "cancelled") ate the
+ * user's verb. The run stops at the first word the assistant didn't say;
+ * when in doubt this errs toward keeping words, because a little leaked echo
+ * confuses the model far less than a missing verb.
+ */
+function echoPrefixLen(words: string[], spoken: string): number {
+  const tailWords = new Set(
+    spoken.toLowerCase().slice(-400).split(/\s+/).map(bare).filter(Boolean),
+  );
+  let n = 0;
+  while (n < words.length && tailWords.has(bare(words[n]))) n++;
+  return n;
+}
+
+/**
+ * The user's own words at the end of a polluted utterance: everything after
+ * the contiguous run of words the assistant just said.
+ */
+export function extractUserTail(live: string, spoken: string): string {
+  const words = live.split(/\s+/).filter(Boolean);
+  return words.slice(echoPrefixLen(words, spoken)).join(" ");
+}
+
+/**
+ * Recover the user's words from a barged utterance. Two independent
+ * estimates of where the echo ends — the word index recorded at barge time,
+ * and the contiguous echo prefix of the final text — and the SMALLER wins.
+ * The recognizer revises earlier words, so either can overshoot; taking the
+ * minimum means a bad estimate leaks echo into the message instead of
+ * silently amputating the user's sentence.
+ */
+export function stripBargePrefix(text: string, keepFrom: number, spoken: string): string {
+  const words = text.split(/\s+/).filter(Boolean);
+  const cut = Math.min(Math.max(0, keepFrom), echoPrefixLen(words, spoken));
+  return words.slice(cut).join(" ");
 }
 
 export class Listener {
@@ -69,13 +155,38 @@ export class Listener {
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
   /** Last moment the recognizer reported audio during our own speech. */
   private lastHeardWhileSpeaking = 0;
+  /** Word index where the user's speech starts in a barged utterance. */
+  private bargeKeepFrom: number | null = null;
+  /** What was being spoken at the barge — the echo to strip against. */
+  private spokenAtBarge = "";
 
-  /** Supplied by the app so echo detection can see what's being said. */
+  /**
+   * Everything recently audible from the speakers, asides included — the
+   * reference echo is judged against. Must NOT be the answer transcript:
+   * progress lines are audible too, and a reply's echo finalises a beat
+   * after the next turn has reset that transcript.
+   */
   currentlySpeaking: () => string = () => "";
   isSpeaking: () => boolean = () => false;
   bargeInEnabled: () => boolean = () => true;
 
   constructor(private handlers: Handlers) {}
+
+  /**
+   * Muting has to stop *capture*, not just delivery. The recognizer keeps
+   * accumulating while muted and finalises a beat later, so gating the
+   * callback alone leaked every muted word into the next message.
+   */
+  setMuted(muted: boolean): void {
+    if (!this.wantActive) return;
+    this.bargeKeepFrom = null;
+    if (!muted) return;
+    try {
+      this.recognition?.abort();
+    } catch {
+      /* already gone */
+    }
+  }
 
   get supported(): boolean {
     return speechSupported();
@@ -131,22 +242,47 @@ export class Listener {
 
       const live = (final || interim).trim();
 
+      // A barge already in progress owns this utterance. Deliver it even if
+      // CARVIS has started speaking again (a background job's "that's done"
+      // can land inside the second it takes Chrome to finalise) — otherwise
+      // the interrupting words are swallowed and must be repeated, which is
+      // the exact failure full duplex exists to remove.
+      if (this.bargeKeepFrom !== null) {
+        if (final.trim()) {
+          const said = stripBargePrefix(final.trim(), this.bargeKeepFrom, this.spokenAtBarge);
+          this.bargeKeepFrom = null;
+          // A bare "stop" already did its job in onBargeIn; and a fragment
+          // that still reads as echo is a false positive, not a request.
+          if (said && !isBareCommand(said) && !looksLikeEcho(said, this.currentlySpeaking())) {
+            this.handlers.onFinal(said);
+          }
+        } else if (interim) {
+          const said = stripBargePrefix(interim.trim(), this.bargeKeepFrom, this.spokenAtBarge);
+          if (said) this.handlers.onInterim(said);
+        }
+        return;
+      }
+
       if (this.isSpeaking() && live) {
         this.lastHeardWhileSpeaking = Date.now();
         // Only the newest words matter — everything before them is our own
         // voice accumulating in the recognizer's utterance.
-        const recent = live.split(/\s+/).filter(Boolean).slice(-8).join(" ");
+        const words = live.split(/\s+/).filter(Boolean);
+        const recent = words.slice(-8).join(" ");
         if (this.bargeInEnabled() && isRealInterruption(recent, this.currentlySpeaking())) {
+          // Full duplex: remember where the user's words start and keep the
+          // recognizer running — the rest of their sentence lands in this
+          // same utterance and is answered once it finalises. (The abort()
+          // that used to live here made interruption work, but it ate the
+          // interruption itself and the user had to say it all again.)
+          this.spokenAtBarge = this.currentlySpeaking();
+          const frag = extractUserTail(live, this.spokenAtBarge);
+          const fragLen = frag ? frag.split(/\s+/).length : 0;
+          this.bargeKeepFrom = Math.max(0, words.length - fragLen);
           this.handlers.onBargeIn();
-          // The utterance is polluted with echo; kill it so the next thing
-          // the user says arrives clean instead of glued to our own words.
-          try {
-            this.recognition?.abort();
-          } catch {
-            /* already gone */
-          }
         }
-        // Either way, nothing heard during speech becomes user input.
+        // Nothing heard DURING speech becomes input directly; a barge is
+        // delivered by the block above, stripped of echo.
         return;
       }
 
@@ -173,6 +309,9 @@ export class Listener {
 
     rec.onend = () => {
       this.handlers.onStateChange(false);
+      // A barge boundary indexes into the dead session's utterance — it
+      // means nothing in the next one.
+      this.bargeKeepFrom = null;
       // Chrome ends the session after a silence; restart to stay always-on.
       if (this.wantActive) {
         this.restartTimer = setTimeout(() => this.spawn(), 250);
