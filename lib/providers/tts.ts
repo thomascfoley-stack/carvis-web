@@ -38,6 +38,11 @@ type VoiceIndex = {
     headers: (s: TtsSettings) => Record<string, string>;
     /** Pull the array out of whatever shape this provider returns. */
     pick: (payload: any) => VoiceOption[];
+    /**
+     * Tried when the primary list is legitimately empty — e.g. Fish's
+     * `self=true` personal library for someone who never uploaded a voice.
+     */
+    fallbackUrl?: (s: TtsSettings) => string;
   };
 };
 
@@ -409,8 +414,11 @@ export const TTS_PROVIDERS: TtsProvider[] = [
     voices: {
       live: {
         // `self=true` returns the caller's own library rather than the whole
-        // public catalogue, which runs to tens of thousands of models.
+        // public catalogue, which runs to tens of thousands of models. An
+        // account with no uploads gets the public top hundred instead of an
+        // empty picker.
         url: () => "https://api.fish.audio/model?page_size=100&self=true",
+        fallbackUrl: () => "https://api.fish.audio/model?page_size=100&sort_by=like_count",
         headers: (s) => ({ authorization: `Bearer ${s.apiKey}` }),
         pick: (p) =>
           arrayIn(p, "items", "data").map((v) => ({
@@ -589,6 +597,42 @@ export type VoiceListResult =
  * the browser. A provider with no listing capability is not an error — the UI
  * simply keeps its free-text field.
  */
+async function pullVoices(
+  live: NonNullable<VoiceIndex["live"]>,
+  url: string,
+  label: string,
+  s: TtsSettings,
+  signal?: AbortSignal,
+): Promise<VoiceOption[] | { error: string }> {
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      headers: { accept: "application/json", ...live.headers(s) },
+      signal,
+    });
+  } catch (e) {
+    return { error: `Could not reach ${label}: ${redact(e).slice(0, 160)}` };
+  }
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    return { error: `${label} ${res.status}: ${redact(detail).slice(0, 200)}` };
+  }
+
+  const payload = await res.json().catch(() => null);
+  if (!payload) return { error: `${label} returned no voice list.` };
+
+  let voices: VoiceOption[] = [];
+  try {
+    voices = live.pick(payload);
+  } catch {
+    /* shape drifted — fall through to sniff */
+  }
+  voices = voices.filter((v) => v.id);
+  if (!voices.length) voices = sniff(payload);
+  return voices;
+}
+
 async function fetchVoicesBody(s: TtsSettings, signal?: AbortSignal): Promise<VoiceListResult> {
   const provider = findTts(s.providerId);
   const index = provider.voices;
@@ -599,32 +643,15 @@ async function fetchVoicesBody(s: TtsSettings, signal?: AbortSignal): Promise<Vo
     return { ok: false, error: `Add your ${provider.label} key first.` };
   }
 
-  let res: Response;
-  try {
-    res = await fetch(index.live.url(s), {
-      headers: { accept: "application/json", ...index.live.headers(s) },
-      signal,
-    });
-  } catch (e) {
-    return { ok: false, error: `Could not reach ${provider.label}: ${redact(e).slice(0, 160)}` };
-  }
+  const first = await pullVoices(index.live, index.live.url(s), provider.label, s, signal);
+  if (!Array.isArray(first)) return { ok: false, error: first.error };
 
-  if (!res.ok) {
-    const detail = await res.text().catch(() => "");
-    return { ok: false, error: `${provider.label} ${res.status}: ${redact(detail).slice(0, 200)}` };
+  let voices = first;
+  // An empty personal library is not an error — offer the public list.
+  if (!voices.length && index.live.fallbackUrl) {
+    const second = await pullVoices(index.live, index.live.fallbackUrl(s), provider.label, s, signal);
+    if (Array.isArray(second)) voices = second;
   }
-
-  const payload = await res.json().catch(() => null);
-  if (!payload) return { ok: false, error: `${provider.label} returned no voice list.` };
-
-  let voices: VoiceOption[] = [];
-  try {
-    voices = index.live.pick(payload);
-  } catch {
-    /* shape drifted — fall through to sniff */
-  }
-  voices = voices.filter((v) => v.id);
-  if (!voices.length) voices = sniff(payload);
   if (!voices.length) return { ok: false, error: `${provider.label} returned no voices.` };
 
   // Google alone returns well over a thousand; sort English first and cap so
