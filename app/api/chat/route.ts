@@ -20,7 +20,10 @@ export const dynamic = "force-dynamic";
  */
 export const maxDuration = 300;
 
-const MAX_TOOL_ROUNDS = 4;
+// Composio's MCP works search-first: find the tool, sometimes fetch its
+// schema, then execute — a legitimate email answer can take four calls
+// before the model has anything to say. Six covers that with headroom.
+const MAX_TOOL_ROUNDS = 6;
 const MAX_HISTORY = 16;
 
 /**

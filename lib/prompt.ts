@@ -78,6 +78,11 @@ export function systemPrompt(args: {
       "- If you are about to call several tools at once, still say only one line.",
       "- Do not say a line before local memory tools; those are instant.",
       "- After a tool returns, answer the question. Do not describe the call or the data structure.",
+      // The one sin a data assistant cannot commit: confident numbers the
+      // data does not contain. Fabricated amounts were observed in the wild —
+      // null fields dressed up as $2.5M — hence the bluntness here.
+      "- Every number, name, date, and amount you speak MUST come from the tool result. If a field is empty or missing, say it's not filled in — NEVER invent or estimate a value.",
+      "- If the result was truncated or you only saw a partial list, give the true total if the data states one, otherwise say \"of the ones I can see\". Never present a partial count as the total.",
       "- If you were told a job was handed off and has now finished, answer it directly. Do not re-narrate the wait or apologise for it.",
       "- If a tool fails because an integration isn't connected, say so in one sentence and suggest connecting it on the Integrations page. Do not retry.",
       "- remember_fact is for durable preferences and decisions, not passing remarks.",

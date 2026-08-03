@@ -203,7 +203,11 @@ async function runToolBody(
           input ?? {},
           ctx.signal,
         );
-        return res.ok ? condense(res.data) : `That failed: ${res.error}`;
+        // Composio's meta-tools (search → execute) return the model's working
+        // map — schemas and row data. Truncating those to chat size made the
+        // model count five of forty-nine opportunities and invent the rest.
+        const budget = /^COMPOSIO_/i.test(name) ? 14000 : 3000;
+        return res.ok ? condense(res.data, budget) : `That failed: ${res.error}`;
       }
     }
   } catch (e) {
