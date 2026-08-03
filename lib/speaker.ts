@@ -47,6 +47,31 @@ export class Speaker {
   private useBrowserVoice = false;
 
   /**
+   * Voice providers meter concurrency, not volume: firing every sentence's
+   * fetch at once trips Fish's limit on a normal plan, and the reply lurches
+   * between the real voice and the robot. Two in flight keeps the pipeline a
+   * chunk ahead of playback without tripping anyone; a 429 that still slips
+   * through is retried, not surrendered to.
+   */
+  private static readonly MAX_INFLIGHT = 2;
+  private inflight = 0;
+  private slotWaiters: (() => void)[] = [];
+
+  private async acquireSlot(): Promise<void> {
+    if (this.inflight < Speaker.MAX_INFLIGHT) {
+      this.inflight++;
+      return;
+    }
+    await new Promise<void>((r) => this.slotWaiters.push(r));
+    this.inflight++;
+  }
+
+  private releaseSlot(): void {
+    this.inflight = Math.max(0, this.inflight - 1);
+    this.slotWaiters.shift()?.();
+  }
+
+  /**
    * Surfaced to the UI. A silent failure is the worst possible outcome here.
    * `fellBack` says whether the on-device voice took over, so the UI can stop
    * claiming a fallback that didn't happen.
@@ -179,49 +204,57 @@ export class Speaker {
     const gen = this.generation;
 
     const job = (async (): Promise<AudioBuffer | null> => {
+      await this.acquireSlot();
       const ac = new AbortController();
       this.controllers.push(ac);
       try {
-        const res = await fetch("/api/tts", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ text: clean }),
-          signal: ac.signal,
-        });
+        if (gen !== this.generation) return null;
 
-        if (res.status === 409) {
-          // Server is configured for the on-device voice.
-          this.useBrowserVoice = true;
-          this.speakOnDevice(clean, aside);
-          return null;
-        }
+        for (let attempt = 0; ; attempt++) {
+          const res = await fetch("/api/tts", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ text: clean }),
+            signal: ac.signal,
+          });
 
-        if (!res.ok) {
-          // Falling silent is the worst outcome: the user sees text appear and
-          // hears nothing, with no clue why. Report it, then keep talking using
-          // the on-device voice so the conversation still works.
-          const detail = await res
-            .json()
-            .then((d) => d?.error ?? `voice provider error ${res.status}`)
-            .catch(() => `voice provider error ${res.status}`);
-          this.onError(String(detail), true);
-          this.useBrowserVoice = true;
-          this.speakOnDevice(clean, aside);
-          return null;
-        }
+          if (res.status === 409) {
+            // Server is configured for the on-device voice — the one case
+            // where switching for the whole session is correct.
+            this.useBrowserVoice = true;
+            this.speakOnDevice(clean, aside);
+            return null;
+          }
 
-        const bytes = await res.arrayBuffer();
-        if (gen !== this.generation || !this.ctx) return null;
+          if (!res.ok) {
+            // 429s and 5xx are weather, not climate — retry with backoff.
+            const transient = res.status === 429 || res.status >= 500;
+            if (transient && attempt < 2 && gen === this.generation) {
+              await new Promise((r) => setTimeout(r, 650 * (attempt + 1)));
+              continue;
+            }
+            // The chosen voice or nothing: the robot NEVER stands in for it.
+            // This chunk stays silent — the words are on screen and the
+            // banner says why — rather than lurching into the generic voice.
+            const detail = await res
+              .json()
+              .then((d) => d?.error ?? `voice provider error ${res.status}`)
+              .catch(() => `voice provider error ${res.status}`);
+            this.onError(String(detail), false);
+            return null;
+          }
 
-        try {
-          return await this.ctx.decodeAudioData(bytes);
-        } catch {
-          // Provider returned 200 but not decodable audio (an HTML error page,
-          // or a format this browser can't handle).
-          this.onError("The voice provider returned audio this browser can't play.", true);
-          this.useBrowserVoice = true;
-          this.speakOnDevice(clean, aside);
-          return null;
+          const bytes = await res.arrayBuffer();
+          if (gen !== this.generation || !this.ctx) return null;
+
+          try {
+            return await this.ctx.decodeAudioData(bytes);
+          } catch {
+            // Provider returned 200 but not decodable audio (an HTML error
+            // page, or a format this browser can't handle).
+            this.onError("The voice provider returned audio this browser can't play.", false);
+            return null;
+          }
         }
       } catch (e) {
         // Interrupting cancels every queued request. That is the feature
@@ -231,6 +264,7 @@ export class Speaker {
         return null;
       } finally {
         this.controllers = this.controllers.filter((c) => c !== ac);
+        this.releaseSlot();
       }
     })();
 
@@ -284,7 +318,11 @@ export class Speaker {
     }
   }
 
-  /** Free, zero-latency, on-device voice. Robotic, but always available. */
+  /**
+   * Free, zero-latency, on-device voice. Only ever reached when the user
+   * *chose* the browser provider (the 409 handshake) — never as a stand-in
+   * for a real voice that hiccuped.
+   */
   private speakOnDevice(text: string, aside = false): void {
     if (typeof window === "undefined" || !window.speechSynthesis) return;
 
@@ -360,6 +398,9 @@ export class Speaker {
     this.deviceUtterance = null;
     for (const c of this.controllers) c.abort();
     this.controllers = [];
+    // Wake anything queued for a fetch slot; each will see the stale
+    // generation and bail instead of fetching audio nobody wants.
+    while (this.slotWaiters.length) this.slotWaiters.shift()?.();
 
     if (this.current) {
       try {
