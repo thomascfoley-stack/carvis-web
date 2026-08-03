@@ -34,7 +34,7 @@ import {
   synthesize,
 } from "../lib/providers/tts.ts";
 import { LLM_PROVIDERS, findProvider, streamLLM } from "../lib/providers/llm.ts";
-import { listTools, callTool, forgetSession } from "../lib/mcp.ts";
+import { listTools, callTool, forgetSession, withUserId } from "../lib/mcp.ts";
 import { buildCatalogue, runTool, toolLabel, condense } from "../lib/tools.ts";
 
 export async function libSuites(ctx) {
@@ -576,6 +576,49 @@ export async function libSuites(ctx) {
     const r = await listTools("http://127.0.0.1:1/nope", mcpKey);
     ok(!r.ok);
     ok(r.error.includes("Could not reach"));
+  });
+
+  t("bearer-only server: 401 flips the auth mode", async () => {
+    const bearerUrl = `${mcp.url}/?wantauth=bearer`;
+    forgetSession(bearerUrl);
+    const r = await listTools(bearerUrl, mcpKey);
+    ok(r.ok, JSON.stringify(r));
+    ok(r.data.length > 0);
+  });
+  t("flipped mode survives the session-id update", async () => {
+    // No forgetSession: reuses the handshake from the previous test. If the
+    // sid update wiped authMode, this call would revert to x-api-key and 401.
+    const bearerUrl = `${mcp.url}/?wantauth=bearer`;
+    const r = await callTool(bearerUrl, mcpKey, "echo_tool", { text: "still-bearer" });
+    ok(r.ok, JSON.stringify(r));
+    eq(r.data, "echo:still-bearer");
+  });
+
+  section("mcp: withUserId");
+
+  t("appends user_id to a composio.dev url", () => {
+    const u = withUserId("https://backend.composio.dev/v3/mcp/abc/mcp", "u_123");
+    ok(u.includes("user_id=u_123"), u);
+  });
+  t("preserves an existing query string", () => {
+    const u = withUserId("https://backend.composio.dev/v3/mcp/abc/mcp?x=1", "u_123");
+    ok(u.includes("x=1") && u.includes("user_id=u_123"), u);
+  });
+  t("never overrides an id already present", () => {
+    const u = withUserId("https://mcp.composio.dev/s/abc?user_id=u_theirs", "u_mine");
+    ok(u.includes("u_theirs") && !u.includes("u_mine"), u);
+  });
+  t("leaves non-composio hosts untouched", () => {
+    const raw = "https://my-own-mcp.example.io/mcp";
+    eq(withUserId(raw, "u_123"), raw);
+  });
+  t("hostile lookalike host is not composio", () => {
+    const raw = "https://evilcomposio.dev/mcp";
+    eq(withUserId(raw, "u_123"), raw);
+  });
+  t("garbage url passes through unchanged", () => {
+    eq(withUserId("not a url", "u_123"), "not a url");
+    eq(withUserId("", "u_123"), "");
   });
 
   /* ------------------------------- tools -------------------------------- */
