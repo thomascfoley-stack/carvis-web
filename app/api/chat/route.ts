@@ -3,6 +3,7 @@ import { loadCredentials } from "@/lib/credentials";
 import { recordFailure } from "@/lib/db";
 import { loadMemories } from "@/lib/memory";
 import { withUserId } from "@/lib/mcp";
+import { ensureFreshMcpAuth } from "@/lib/mcpauth";
 import { loadPrefs } from "@/lib/prefs";
 import { systemPrompt } from "@/lib/prompt";
 import { streamLLM, type CanonMsg, type ToolCall } from "@/lib/providers/llm";
@@ -76,10 +77,15 @@ export async function POST(req: Request) {
 
   // Bring-your-own-key: every call is billed to the caller's own account, so
   // there is no owner default to fall back to and no quota to enforce.
-  const stored = await loadCredentials(session.email);
-  // Composio MCP scopes requests by user; the session's own Composio id goes
-  // into the URL here, so the stored URL stays clean and follows the session.
-  const creds = { ...stored, mcpUrl: withUserId(stored.mcpUrl, session.cid) };
+  const stored = await ensureFreshMcpAuth(session.email, await loadCredentials(session.email));
+  // An OAuth-connected endpoint authenticates with the user's token (which
+  // rides the composioKey slot — the client sends JWTs as Bearer). Key-based
+  // Composio URLs still get the session's user id appended.
+  const creds = {
+    ...stored,
+    mcpUrl: stored.mcpToken ? stored.mcpUrl : withUserId(stored.mcpUrl, session.cid),
+    composioKey: stored.mcpToken || stored.composioKey,
+  };
   if (!creds.llmKey) {
     return Response.json(
       { error: "No model key yet. Add yours in Setup.", needsOnboarding: true },

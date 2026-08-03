@@ -11,7 +11,7 @@
 
 import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
-import { startOpenAIMock, startAnthropicMock, startTtsMock, startMcpMock } from "./mocks.mjs";
+import { startOpenAIMock, startAnthropicMock, startTtsMock, startMcpMock, startOAuthMock } from "./mocks.mjs";
 import { drain, resetCounts, summary } from "./harness.mjs";
 
 const args = process.argv.slice(2);
@@ -65,6 +65,7 @@ async function main() {
   mocks.anthropicMock = await startAnthropicMock(4311);
   mocks.ttsMock = await startTtsMock(4312);
   mocks.mcpMock = await startMcpMock(4313);
+  mocks.oauthMock = await startOAuthMock(4314);
 
   console.log("Starting next production server…");
   const server = await startServer({

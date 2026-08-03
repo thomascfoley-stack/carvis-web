@@ -8,6 +8,7 @@ import {
 import { encryptionConfigured } from "@/lib/crypto";
 import { dbEnabled } from "@/lib/db";
 import { forgetSession, listTools, withUserId } from "@/lib/mcp";
+import { ensureFreshMcpAuth } from "@/lib/mcpauth";
 import { forgetCatalogue } from "@/lib/tools";
 import { loadPrefs, savePrefs } from "@/lib/prefs";
 import { LLM_PROVIDERS } from "@/lib/providers/llm";
@@ -120,20 +121,21 @@ export async function PUT(req: Request) {
   const session = await sessionFromRequest(req);
   if (!session) return Response.json({ error: "Not signed in." }, { status: 401 });
 
-  const creds = await loadCredentials(session.email);
-  if (!creds.mcpUrl || !creds.composioKey) {
-    // Say which half is missing — "endpoint and key" sent people hunting for
-    // a URL problem when the URL was fine and the key was never saved.
-    const missing =
-      !creds.mcpUrl && !creds.composioKey
-        ? "an MCP endpoint URL and its API key"
-        : !creds.mcpUrl
-          ? "the MCP endpoint URL"
-          : "the MCP API key — the URL is saved";
-    return Response.json({ ok: false, error: `Add ${missing} first.` });
+  const creds = await ensureFreshMcpAuth(session.email, await loadCredentials(session.email));
+  if (!creds.mcpUrl || (!creds.composioKey && !creds.mcpToken)) {
+    // Say precisely what's missing. The URL is the whole setup for OAuth
+    // endpoints; the key is a fallback for key-authenticated ones.
+    const error = !creds.mcpUrl
+      ? "Add your Composio MCP URL first."
+      : "URL saved — now click Connect Composio below (or add an API key if your endpoint uses one).";
+    return Response.json({ ok: false, error });
   }
 
-  const res = await listTools(withUserId(creds.mcpUrl, session.cid), creds.composioKey, req.signal);
+  const res = await listTools(
+    creds.mcpToken ? creds.mcpUrl : withUserId(creds.mcpUrl, session.cid),
+    creds.mcpToken || creds.composioKey,
+    req.signal,
+  );
   if (!res.ok) return Response.json({ ok: false, error: redact(res.error) });
 
   return Response.json({

@@ -14,6 +14,19 @@ export default function SetupPage() {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<any>(null);
 
+  /** Outcome of the OAuth round trip, delivered via query param by /api/mcp/callback. */
+  const [mcpFeedback, setMcpFeedback] = useState<{ ok: boolean; msg: string } | null>(null);
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search);
+    if (q.get("mcp") === "connected") {
+      setMcpFeedback({ ok: true, msg: "Composio connected — CARVIS can now use your tools." });
+    } else if (q.get("mcp_error")) {
+      setMcpFeedback({ ok: false, msg: q.get("mcp_error") ?? "Connect failed." });
+    }
+    // Don't let a stale outcome replay on refresh or survive a copied link.
+    if (q.has("mcp") || q.has("mcp_error")) window.history.replaceState(null, "", "/setup");
+  }, []);
+
   // iOS renders a size>1 <select> as a cramped unstyled inline list; the
   // native wheel picker (a plain select) is far better there. Desktop keeps
   // the listbox, which is better for scanning long voice lists.
@@ -267,11 +280,11 @@ export default function SetupPage() {
       <div className="card">
         <h2>Composio MCP</h2>
         <div className="field">
-          <label>Your MCP endpoint URL</label>
+          <label>Your MCP URL — paste it, save, connect. That&rsquo;s the whole setup.</label>
           <input
             value={form.mcpUrl}
             onChange={(e) => setForm({ ...form, mcpUrl: e.target.value })}
-            placeholder="https://mcp.composio.dev/…"
+            placeholder="https://connect.composio.dev/mcp"
             inputMode="url"
             autoCapitalize="none"
             autoCorrect="off"
@@ -282,17 +295,38 @@ export default function SetupPage() {
             connections, your account.
           </span>
         </div>
-        <div className="field">
-          <label>{keyLabel("Composio API key", c.composioKey)}</label>
-          <input
-            type="password"
-            value={form.composioKey}
-            onChange={(e) => setForm({ ...form, composioKey: e.target.value })}
-            placeholder={c.composioKey.set ? "leave blank to keep the stored key" : "ak_…"}
-            autoComplete="off"
-          />
-        </div>
-        <button className="btn ghost" onClick={test} disabled={testing || !c.composioKey.set}>
+
+        {mcpFeedback && <p className={`note ${mcpFeedback.ok ? "" : "err"}`}>{mcpFeedback.msg}</p>}
+
+        {c.mcpConnected ? (
+          <p className="note">Connected to Composio ✓ — CARVIS signs its own requests.</p>
+        ) : (
+          c.mcpUrl && (
+            <a className="btn" href="/api/mcp/connect" style={{ marginBottom: 10 }}>
+              Connect Composio
+            </a>
+          )
+        )}
+
+        <details style={{ margin: "8px 0" }}>
+          <summary className="note">Key-based endpoint instead? (advanced)</summary>
+          <div className="field" style={{ marginTop: 8 }}>
+            <label>{keyLabel("API key", c.composioKey)}</label>
+            <input
+              type="password"
+              value={form.composioKey}
+              onChange={(e) => setForm({ ...form, composioKey: e.target.value })}
+              placeholder={c.composioKey.set ? "leave blank to keep the stored key" : "ak_…"}
+              autoComplete="off"
+            />
+          </div>
+        </details>
+
+        <button
+          className="btn ghost"
+          onClick={test}
+          disabled={testing || (!c.composioKey.set && !c.mcpConnected)}
+        >
           {testing ? "Testing…" : "Test connection"}
         </button>
         {testResult && (

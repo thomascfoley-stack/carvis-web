@@ -183,6 +183,19 @@ export function readCookie(req: Request, name: string): string | undefined {
 export const sessionFromRequest = (req: Request) =>
   readSession(readCookie(req, SESSION_COOKIE));
 
+/**
+ * Generic short-lived signed payloads, for flows (like MCP OAuth) that need
+ * to carry structured state through a redirect without trusting the round
+ * trip. Same HMAC + expiry machinery as sessions.
+ */
+export const sealTicket = (data: Record<string, unknown>, ttlSec: number) => mint(data, ttlSec);
+
+export async function openTicket<T = Record<string, unknown>>(
+  token: string | undefined,
+): Promise<T | null> {
+  return open<T>(token);
+}
+
 /* -------------------------- oauth state token ------------------------- */
 
 /**

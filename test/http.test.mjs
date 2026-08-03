@@ -18,7 +18,7 @@ export function forgeSession(secret, email, cid = "u_testcid", ttlMs = 3600_000)
 }
 
 export async function httpSuites(ctx) {
-  const { baseUrl, secret, mcpMock, ttsMock, openaiMock } = ctx;
+  const { baseUrl, secret, mcpMock, ttsMock, openaiMock, oauthMock } = ctx;
   // Round-unique: the 428-before-keys assertion needs a user who genuinely
   // has no keys yet, which a reused address stops being after round one.
   const email = ctx.email ?? "loop@test.dev";
@@ -144,6 +144,111 @@ export async function httpSuites(ctx) {
     eq(res.status, 200);
     const d = await res.json();
     eq(d.updated, false);
+  });
+
+  /* ----------------------------- mcp oauth ------------------------------ */
+  // The "paste one URL" path: no API key anywhere. Discovery, registration,
+  // consent, callback, then keyless tool calls over the issued Bearer token.
+  section("http: mcp oauth connect flow");
+
+  const oEmail = `oauth-${email}`;
+  const oCookie = `carvis_session=${forgeSession(secret, oEmail)}`;
+  const oapi = (path, opts = {}) =>
+    fetch(`${baseUrl}${path}`, {
+      ...opts,
+      headers: { cookie: oCookie, "content-type": "application/json", ...(opts.headers ?? {}) },
+      redirect: "manual",
+    });
+  let oStateCookie = "";
+  let oCallbackUrl = "";
+
+  t("oauth endpoint saved keyless, test says connect", async () => {
+    await oapi("/api/credentials", {
+      method: "POST",
+      body: JSON.stringify({
+        mcpUrl: `${mcpMock.url}/?oauth=1`,
+        llmProvider: "custom",
+        llmModel: "mock-1",
+        llmKey: "test-llm-key",
+        llmBaseUrl: openaiMock.url,
+        ttsProvider: "browser",
+      }),
+    });
+    const pre = await (await oapi("/api/credentials", { method: "PUT" })).json();
+    ok(!pre.ok, JSON.stringify(pre));
+    ok(/Connect Composio/.test(pre.error), pre.error);
+  });
+
+  t("connect redirects to the discovered authorization server", async () => {
+    const start = await oapi("/api/mcp/connect");
+    eq(start.status, 302);
+    const authUrl = start.headers.get("location") ?? "";
+    ok(authUrl.startsWith(`${oauthMock.url}/oauth2/authorize`), authUrl);
+    ok(authUrl.includes("code_challenge="), "PKCE challenge missing");
+    ok(!authUrl.includes("code_verifier"), "verifier must never reach a URL");
+    oStateCookie = (start.headers.get("set-cookie") ?? "").split(";")[0];
+    ok(oStateCookie.startsWith("carvis_mcp_state="), oStateCookie.slice(0, 30));
+
+    const consent = await fetch(authUrl, { redirect: "manual" });
+    eq(consent.status, 302);
+    oCallbackUrl = consent.headers.get("location") ?? "";
+    ok(oCallbackUrl.includes("/api/mcp/callback?"), oCallbackUrl);
+  });
+
+  t("callback without the state cookie is refused", async () => {
+    const bare = await fetch(oCallbackUrl, { redirect: "manual", headers: { cookie: oCookie } });
+    ok((bare.headers.get("location") ?? "").includes("mcp_error="), bare.headers.get("location"));
+  });
+
+  t("callback exchanges the code and stores the grant", async () => {
+    const done = await fetch(oCallbackUrl, {
+      redirect: "manual",
+      headers: { cookie: `${oCookie}; ${oStateCookie}` },
+    });
+    eq(done.status, 302);
+    ok((done.headers.get("location") ?? "").includes("mcp=connected"), done.headers.get("location"));
+
+    const d = await (await oapi("/api/credentials")).json();
+    ok(d.credentials.mcpConnected, "mcpConnected flag");
+    const body = JSON.stringify(d);
+    ok(!body.includes("eyJtb2NrIn0"), "token must never reach the browser");
+  });
+
+  t("keyless test-connection works over the Bearer token", async () => {
+    const post = await (await oapi("/api/credentials", { method: "PUT" })).json();
+    ok(post.ok, JSON.stringify(post));
+    ok(post.toolCount >= 64, `toolCount ${post.toolCount}`);
+  });
+
+  t("keyless chat tool turn round-trips", async () => {
+    const res = await oapi("/api/chat", {
+      method: "POST",
+      body: JSON.stringify({ messages: [{ role: "user", text: 'TOOL:echo_tool:{"text":"oauth"}' }] }),
+    });
+    const text = (await res.text())
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => {
+        try {
+          return JSON.parse(l);
+        } catch {
+          return {};
+        }
+      })
+      .filter((e) => e.t === "text")
+      .map((e) => e.v)
+      .join("");
+    ok(text.includes("echo:oauth"), text);
+  });
+
+  t("changing the MCP URL clears the grant", async () => {
+    await oapi("/api/credentials", {
+      method: "POST",
+      body: JSON.stringify({ mcpUrl: mcpMock.url }),
+    });
+    const d = await (await oapi("/api/credentials")).json();
+    ok(!d.credentials.mcpConnected, "grant must not survive a URL change");
+    // Restore for nothing — this identity is per-round and disposable.
   });
 
   /* ---------------------------- credentials ----------------------------- */

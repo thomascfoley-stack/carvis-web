@@ -16,8 +16,22 @@ import { dbEnabled, dbLoadCredentials, dbSaveCredentials } from "./db";
 export type Credentials = {
   /** The user's own Composio MCP endpoint URL. */
   mcpUrl: string;
-  /** The user's own Composio API key, for that endpoint. */
+  /**
+   * The user's own Composio API key, for key-authenticated endpoints. With
+   * the OAuth flow (mcpToken below) this is optional — pasting the MCP URL
+   * and clicking Connect is the whole setup.
+   */
   composioKey: string;
+  /** OAuth access token for the MCP endpoint, from the Connect flow. */
+  mcpToken: string;
+  /** OAuth refresh token; rotates the access token without re-consent. */
+  mcpRefresh: string;
+  /** The public client id this deployment registered with the auth server. */
+  mcpClientId: string;
+  /** Token endpoint used for refresh. */
+  mcpTokenUrl: string;
+  /** Access-token expiry, unix seconds as a string. */
+  mcpTokenExp: string;
   /** Model provider. */
   llmProvider: string;
   llmModel: string;
@@ -35,6 +49,11 @@ export type Credentials = {
 export const EMPTY: Credentials = {
   mcpUrl: "",
   composioKey: "",
+  mcpToken: "",
+  mcpRefresh: "",
+  mcpClientId: "",
+  mcpTokenUrl: "",
+  mcpTokenExp: "",
   llmProvider: "anthropic",
   llmModel: "claude-haiku-4-5-20251001",
   llmKey: "",
@@ -82,7 +101,14 @@ export function acceptableBaseUrl(raw: string): boolean {
   return true;
 }
 
-const SECRET_FIELDS = ["composioKey", "llmKey", "ttsKey"] as const;
+const SECRET_FIELDS = ["composioKey", "llmKey", "ttsKey", "mcpToken", "mcpRefresh"] as const;
+
+/**
+ * "Blank means keep" protects stored secrets from accidental wipes, which
+ * means genuinely clearing one needs an explicit sentinel. Internal use only
+ * (the OAuth flow retiring a dead token); request bodies never carry it.
+ */
+export const CLEAR_SECRET = "__CLEAR__";
 
 /** Stamp recording which master key encrypted this row. Never a credential. */
 const KID = "_kid";
@@ -137,8 +163,15 @@ export async function saveCredentials(
     if (v === undefined || v === null) continue;
     const key = k as keyof Credentials;
     // A blank secret means "leave the stored one alone" — otherwise saving an
-    // unrelated field would silently wipe a working key.
-    if ((SECRET_FIELDS as readonly string[]).includes(key) && String(v).trim() === "") continue;
+    // unrelated field would silently wipe a working key. CLEAR_SECRET is the
+    // explicit opposite: genuinely forget it.
+    if ((SECRET_FIELDS as readonly string[]).includes(key)) {
+      if (v === CLEAR_SECRET) {
+        next[key] = "";
+        continue;
+      }
+      if (String(v).trim() === "") continue;
+    }
     next[key] = String(v).trim();
   }
 
@@ -152,6 +185,17 @@ export async function saveCredentials(
   }
   if (patch.ttsProvider && patch.ttsProvider !== current.ttsProvider) {
     if (!String(patch.ttsKey ?? "").trim()) next.ttsKey = "";
+  }
+
+  // An OAuth token is bound to the endpoint it was issued for. A new MCP URL
+  // means the old grant is meaningless — clear it so Setup honestly shows
+  // "connect" again instead of sending the wrong server someone else's token.
+  if (patch.mcpUrl !== undefined && String(patch.mcpUrl).trim() !== current.mcpUrl) {
+    next.mcpToken = "";
+    next.mcpRefresh = "";
+    next.mcpClientId = "";
+    next.mcpTokenUrl = "";
+    next.mcpTokenExp = "";
   }
 
   // Refuse rather than store an endpoint we'd be unwilling to call. The MCP
@@ -209,13 +253,15 @@ export async function secretsUnreadable(email: string): Promise<boolean> {
 
 /** True once the user has supplied everything the app needs to function. */
 export function isOnboarded(c: Credentials): boolean {
-  return !!(c.composioKey && c.llmKey && c.ttsKey);
+  return !!((c.mcpToken || c.composioKey) && c.llmKey && c.ttsKey);
 }
 
 /** What the browser is allowed to see: presence and a masked hint, never the key. */
 export function maskCredentials(c: Credentials) {
   return {
     mcpUrl: c.mcpUrl,
+    // Presence only — the token itself stays server-side like every secret.
+    mcpConnected: !!c.mcpToken,
     llmProvider: c.llmProvider,
     llmModel: c.llmModel,
     llmBaseUrl: c.llmBaseUrl ?? "",

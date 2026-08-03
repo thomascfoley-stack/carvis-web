@@ -282,6 +282,27 @@ export function startMcpMock(port) {
       return;
     }
 
+    // OAuth-mode endpoint, Composio-style: no API keys, only Bearer JWTs, and
+    // an unauthenticated request is told where the authorization server lives.
+    if (req.url.startsWith("/.well-known/oauth-protected-resource")) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({
+        resource: `http://127.0.0.1:${port}/?oauth=1`,
+        authorization_servers: ["http://127.0.0.1:4314"],
+        bearer_methods_supported: ["header"],
+      }));
+      return;
+    }
+    const oauthMode = new URL(req.url, "http://x").searchParams.get("oauth") === "1";
+    if (oauthMode && !(req.headers.authorization ?? "").startsWith("Bearer eyJ")) {
+      res.writeHead(401, {
+        "content-type": "application/json",
+        "www-authenticate": `Bearer error="unauthorized", resource_metadata="http://127.0.0.1:${port}/.well-known/oauth-protected-resource"`,
+      });
+      res.end(JSON.stringify({ error: "Authorization required" }));
+      return;
+    }
+
     const body = await readBody(req);
     const sid = req.headers["mcp-session-id"];
     const asSse = new URL(req.url, "http://x").searchParams.get("sse") === "1";
@@ -392,6 +413,111 @@ export function startMcpMock(port) {
     stats,
     expireSessions: () => sessions.clear(),
   }));
+}
+
+/* ------------------------------- OAuth mock ----------------------------- */
+
+/**
+ * The smallest authorization server that satisfies the MCP OAuth dance:
+ * metadata discovery, open dynamic registration, an authorize endpoint that
+ * consents instantly (bouncing straight back with a code), and a token
+ * endpoint issuing JWT-shaped bearers. Faithful where it matters: the token
+ * grant requires the PKCE verifier and the registered client id.
+ */
+export function startOAuthMock(port) {
+  const codes = new Map(); // code -> { redirectUri }
+  let seq = 0;
+
+  const server = http.createServer(async (req, res) => {
+    const url = new URL(req.url, `http://127.0.0.1:${port}`);
+    const json = (status, body) => {
+      res.writeHead(status, { "content-type": "application/json" });
+      res.end(JSON.stringify(body));
+    };
+
+    if (url.pathname === "/.well-known/oauth-authorization-server") {
+      json(200, {
+        issuer: `http://127.0.0.1:${port}`,
+        authorization_endpoint: `http://127.0.0.1:${port}/oauth2/authorize`,
+        token_endpoint: `http://127.0.0.1:${port}/oauth2/token`,
+        registration_endpoint: `http://127.0.0.1:${port}/oauth2/register`,
+        code_challenge_methods_supported: ["S256"],
+        grant_types_supported: ["authorization_code", "refresh_token"],
+        response_types_supported: ["code"],
+        token_endpoint_auth_methods_supported: ["none"],
+      });
+      return;
+    }
+
+    if (url.pathname === "/oauth2/register") {
+      const body = await readBody(req);
+      if (!Array.isArray(body.redirect_uris) || !body.redirect_uris.length) {
+        json(400, { error: "invalid_redirect_uri" });
+        return;
+      }
+      json(201, { client_id: "client_mock_1", token_endpoint_auth_method: "none" });
+      return;
+    }
+
+    if (url.pathname === "/oauth2/authorize") {
+      const redirectUri = url.searchParams.get("redirect_uri") ?? "";
+      const state = url.searchParams.get("state") ?? "";
+      if (url.searchParams.get("client_id") !== "client_mock_1" || !url.searchParams.get("code_challenge")) {
+        json(400, { error: "invalid_request" });
+        return;
+      }
+      const code = `code_${++seq}`;
+      codes.set(code, { redirectUri });
+      const back = new URL(redirectUri);
+      back.searchParams.set("code", code);
+      back.searchParams.set("state", state);
+      res.writeHead(302, { location: back.toString() });
+      res.end();
+      return;
+    }
+
+    if (url.pathname === "/oauth2/token") {
+      const raw = await new Promise((r) => {
+        let d = "";
+        req.on("data", (c) => (d += c));
+        req.on("end", () => r(d));
+      });
+      const p = new URLSearchParams(raw);
+      if (p.get("client_id") !== "client_mock_1") {
+        json(401, { error: "invalid_client" });
+        return;
+      }
+      if (p.get("grant_type") === "authorization_code") {
+        const known = codes.get(p.get("code"));
+        if (!known || !p.get("code_verifier")) {
+          json(400, { error: "invalid_grant" });
+          return;
+        }
+        codes.delete(p.get("code"));
+        json(200, {
+          access_token: `eyJtb2NrIn0.access${++seq}.sig`,
+          refresh_token: `refresh_${seq}`,
+          token_type: "Bearer",
+          expires_in: 3600,
+        });
+        return;
+      }
+      if (p.get("grant_type") === "refresh_token" && (p.get("refresh_token") ?? "").startsWith("refresh_")) {
+        json(200, {
+          access_token: `eyJtb2NrIn0.refreshed${++seq}.sig`,
+          refresh_token: `refresh_${seq}`,
+          token_type: "Bearer",
+          expires_in: 3600,
+        });
+        return;
+      }
+      json(400, { error: "unsupported_grant_type" });
+      return;
+    }
+
+    json(404, { error: "not_found" });
+  });
+  return listen(server, port);
 }
 
 /* ------------------------------- utilities ------------------------------ */
