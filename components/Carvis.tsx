@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import Orb, { type OrbState } from "./Orb";
+import Orb, { type BranchAnchor, type OrbState } from "./Orb";
 import { createSentenceStream } from "@/lib/sentences";
 import { Speaker } from "@/lib/speaker";
 import { getMicAnalyser, startMicAnalyser, stopMicAnalyser } from "@/lib/mic";
@@ -33,6 +33,16 @@ export default function Carvis() {
 
   /** Non-empty while a handed-off job is still running in the background. */
   const [backgroundJob, setBackgroundJob] = useState("");
+
+  /**
+   * The branch a tool turn's result lives on. Set when the first tool fires,
+   * cleared when the next task begins — that is the zoom-out. The card shows
+   * the assistant's own consolidated answer, not the raw tool payload: the
+   * consolidation contract already guarantees it fits a glance.
+   */
+  const [branch, setBranch] = useState<{ id: number; kind: string } | null>(null);
+  const [branchText, setBranchText] = useState("");
+  const branchCardRef = useRef<HTMLDivElement>(null);
 
   const speakerRef = useRef<Speaker | null>(null);
   const listenerRef = useRef<Listener | null>(null);
@@ -65,6 +75,25 @@ export default function Carvis() {
     return speaker.onSpeakingChange(setSpeaking);
   }, []);
 
+  /**
+   * The Orb reports the focused branch's screen position every frame; the
+   * card follows via direct style writes — running this through React state
+   * would re-render the whole component at 60Hz for a transform.
+   */
+  const onBranchAnchor = useCallback((a: BranchAnchor) => {
+    const el = branchCardRef.current;
+    if (!el) return;
+    const wrap = el.parentElement;
+    const w = wrap?.clientWidth ?? 0;
+    const h = wrap?.clientHeight ?? 0;
+    // Clamp inside the stage so the card never slides under the controls or
+    // off a phone's edge while the cloud drifts.
+    const x = Math.max(w * 0.22, Math.min(w * 0.78, a.x));
+    const y = Math.max(h * 0.24, Math.min(h * 0.72, a.y));
+    el.style.opacity = a.visible ? "1" : "0";
+    el.style.transform = `translate(-50%, -50%) translate(${x}px, ${y}px) scale(${a.scale})`;
+  }, []);
+
   const outputAnalyser = useCallback(() => speakerRef.current?.getAnalyser() ?? null, []);
   // Muting must also freeze the visual — a cloud reacting to a muted mic
   // would be actively misleading about whether you're being heard.
@@ -93,6 +122,12 @@ export default function Carvis() {
     setInterim("");
     setPartial("");
     setThinking(true);
+
+    // A new task is the zoom-out: the previous result's branch releases the
+    // camera before a fresh branch can claim it.
+    setBranch(null);
+    setBranchText("");
+    let branchActive = false;
 
     const speaker = speakerRef.current;
     speaker?.resetTranscript();
@@ -154,6 +189,8 @@ export default function Carvis() {
             assistant += ev.v;
             setPartial(assistant);
             setThinking(false);
+            // The result writes itself onto the branch as it is spoken.
+            if (branchActive && turnSeq.current === myTurn) setBranchText(assistant);
             // The moment a sentence is complete, start speaking it.
             for (const chunk of splitter.push(ev.v)) speaker?.enqueue(chunk);
           } else if (ev.t === "say") {
@@ -178,10 +215,19 @@ export default function Carvis() {
           } else if (ev.t === "status") {
             setStatus(ev.v);
             if (ev.v) setThinking(true);
+            // First tool of the turn claims a branch; the camera starts its
+            // glide while the tool is still working.
+            if (ev.v && !branchActive && turnSeq.current === myTurn) {
+              branchActive = true;
+              setBranch({ id: myTurn, kind: String(ev.v) });
+            }
           } else if (ev.t === "note") {
             setNote(ev.v);
           } else if (ev.t === "error") {
             setError(ev.v);
+            // A failed turn releases the camera — an error banner floating on
+            // a brain branch would dignify the failure more than it deserves.
+            if (turnSeq.current === myTurn) setBranch(null);
           }
         }
       }
@@ -313,7 +359,16 @@ export default function Carvis() {
           state={orbState}
           getOutputAnalyser={outputAnalyser}
           getInputAnalyser={inputAnalyser}
+          focusId={branch?.id ?? null}
+          onAnchor={onBranchAnchor}
         />
+
+        {branch && (
+          <div className="branch-card" ref={branchCardRef} aria-live="polite">
+            <div className="branch-kind">{branch.kind}</div>
+            <div className="branch-text">{branchText || "Working…"}</div>
+          </div>
+        )}
 
         {!started && (
           <button className="ignition" onClick={beginSession}>

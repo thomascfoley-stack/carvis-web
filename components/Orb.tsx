@@ -6,6 +6,14 @@ import * as THREE from "three";
 export type OrbState = "idle" | "listening" | "thinking" | "speaking";
 
 /**
+ * Where the focused branch sits on screen, reported every frame so the HTML
+ * result card can ride the projection. Text stays in the DOM — crisp at any
+ * zoom, selectable, visible to screen readers — while the glowing socket it
+ * appears to sit on lives in the scene.
+ */
+export type BranchAnchor = { x: number; y: number; scale: number; visible: boolean };
+
+/**
  * CARVIS — neural-net particle cloud.
  *
  * Faithful to the original macOS build, because the thing that makes it read
@@ -21,19 +29,32 @@ export default function Orb({
   state,
   getOutputAnalyser,
   getInputAnalyser,
+  focusId = null,
+  onAnchor,
 }: {
   state: OrbState;
   getOutputAnalyser: () => AnalyserNode | null;
   getInputAnalyser?: () => AnalyserNode | null;
+  /**
+   * Non-null while a task's result should live on a branch: the camera
+   * dollies toward a branch chosen from this id, and onAnchor reports where
+   * it lands on screen. Null flies home. A new id picks a new branch.
+   */
+  focusId?: number | null;
+  onAnchor?: (a: BranchAnchor) => void;
 }) {
   const mountRef = useRef<HTMLDivElement>(null);
   const stateRef = useRef(state);
   const outRef = useRef(getOutputAnalyser);
   const inRef = useRef(getInputAnalyser);
+  const focusRef = useRef(focusId);
+  const anchorCbRef = useRef(onAnchor);
 
   stateRef.current = state;
   outRef.current = getOutputAnalyser;
   inRef.current = getInputAnalyser;
+  focusRef.current = focusId;
+  anchorCbRef.current = onAnchor;
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -144,6 +165,48 @@ export default function Orb({
     type Electron = { sx: number; sy: number; sz: number; ex: number; ey: number; ez: number; t: number; speed: number };
     const active: Electron[] = [];
     let connections: number[][] = [];
+
+    /* ------------------------- branch focus ----------------------------- */
+
+    // The socket the result card appears to sit on: a faint additive quad,
+    // parented to the cloud so it tumbles and drifts with everything else.
+    const socketGeo = new THREE.PlaneGeometry(2.2, 2.2);
+    const socketMat = new THREE.MeshBasicMaterial({
+      color: 0x5fc6ff,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    const socket = new THREE.Mesh(socketGeo, socketMat);
+    socket.visible = false;
+    points.add(socket);
+
+    let lastFocus: number | null = null;
+    let socketOpacity = 0;
+    const camHome = new THREE.Vector3(0, 0, 40);
+    const camGoal = new THREE.Vector3(0, 0, 40);
+    const lookCur = new THREE.Vector3(0, 0, 0);
+    const lookGoal = new THREE.Vector3(0, 0, 0);
+    const worldAnchor = new THREE.Vector3();
+    const projected = new THREE.Vector3();
+
+    /**
+     * A branch per task, spread by the golden angle so consecutive tasks land
+     * on visibly different parts of the cortex. Deterministic from the id: a
+     * re-render never teleports the card.
+     */
+    const pickBranch = (id: number) => {
+      const theta = id * 2.399963;
+      const phi = Math.acos(1 - 2 * ((id * 0.6180339) % 1)) * 0.8 + 0.35;
+      const r = BASE_R * 0.52;
+      socket.position.set(
+        r * Math.sin(phi) * Math.cos(theta),
+        r * Math.cos(phi),
+        r * Math.sin(phi) * Math.sin(theta),
+      );
+    };
 
     /* ------------------------------ state ------------------------------ */
 
@@ -285,9 +348,14 @@ export default function Orb({
       electrons.rotation.set(spinX, spinY, spinZ);
       points.position.z = lines.position.z = electrons.position.z = cloudZ;
 
-      mat.opacity = Math.min(0.95, curBright + 0.18 + bass * 0.12);
+      // Additive blending saturates into a white blob once the camera is
+      // inside the cloud — dim with proximity so a zoomed branch stays a
+      // structure instead of a floodlight. Squared for the lines: the dense
+      // centre's line stack is where the burn-out actually comes from.
+      const proximity = Math.max(0.45, Math.min(1, camera.position.length() / 40));
+      mat.opacity = Math.min(0.95, curBright + 0.18 + bass * 0.12) * proximity;
       mat.size = curSize + mid * 0.12;
-      lineMat.opacity = Math.min(0.9, lineAmount * (1.1 + bass * 0.18));
+      lineMat.opacity = Math.min(0.9, lineAmount * (1.1 + bass * 0.18)) * proximity * proximity;
 
       /* --------------------------- particles --------------------------- */
 
@@ -398,6 +466,56 @@ export default function Orb({
       (eGeo.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;
       eGeo.setDrawRange(0, eCount);
 
+      /* --------------------------- branch focus ------------------------- */
+
+      const focus = focusRef.current;
+      if (focus !== lastFocus) {
+        if (focus != null) {
+          pickBranch(focus);
+          socket.visible = true;
+        }
+        lastFocus = focus;
+      }
+
+      const focusing = focus != null;
+      if (focusing) {
+        socket.getWorldPosition(worldAnchor);
+        // Dolly along the ray from the core through the branch, so the branch
+        // fills the view with the rest of the mind still alive behind it.
+        // Reduced motion keeps the camera home; the card simply fades in.
+        if (!prefersReduced) {
+          camGoal.copy(worldAnchor).multiplyScalar(1 + 13 / Math.max(worldAnchor.length(), 4));
+          lookGoal.copy(worldAnchor);
+        }
+      } else {
+        camGoal.copy(camHome);
+        lookGoal.set(0, 0, 0);
+      }
+      // ~1.5s glide — deliberate, seizure-safe, and slow enough to read as
+      // attention shifting rather than a cut.
+      const camEase = 1 - Math.pow(0.975, dtF);
+      camera.position.lerp(camGoal, camEase);
+      lookCur.lerp(lookGoal, camEase);
+      camera.lookAt(lookCur);
+      socket.lookAt(camera.position);
+
+      socketOpacity += ((focusing ? 0.55 : 0) - socketOpacity) * camEase;
+      socketMat.opacity = socketOpacity * (0.8 + Math.sin(t * 1.1) * 0.08);
+      if (!focusing && socketOpacity < 0.01) socket.visible = false;
+
+      const cb = anchorCbRef.current;
+      if (cb) {
+        socket.getWorldPosition(worldAnchor);
+        projected.copy(worldAnchor).project(camera);
+        const dist = camera.position.distanceTo(worldAnchor);
+        cb({
+          x: (projected.x * 0.5 + 0.5) * mount.clientWidth,
+          y: (-projected.y * 0.5 + 0.5) * mount.clientHeight,
+          scale: Math.max(0.55, Math.min(1.25, 30 / Math.max(dist, 1))),
+          visible: focusing && projected.z < 1 && socketOpacity > 0.05,
+        });
+      }
+
       renderer.render(scene, camera);
     };
     tick();
@@ -409,6 +527,7 @@ export default function Orb({
       geo.dispose(); mat.dispose();
       lineGeo.dispose(); lineMat.dispose();
       eGeo.dispose(); eMat.dispose();
+      socketGeo.dispose(); socketMat.dispose();
       renderer.dispose();
       // dispose() alone keeps the GL context alive until GC; phones have a
       // hard context limit and Safari kills the oldest without asking.
