@@ -24,7 +24,22 @@ export type McpResult<T> = { ok: true; data: T } | { ok: false; error: string; r
 
 const PROTOCOL_VERSION = "2025-06-18";
 
-type Session = { id: string; initialised: boolean };
+/**
+ * Exactly ONE auth header per request. Composio's backend rejects a request
+ * carrying both `authorization: Bearer` and `x-api-key` ("Multiple
+ * authentication modes were provided") — sending both to be safe is precisely
+ * the thing that breaks it. An API-key-shaped credential goes in x-api-key,
+ * a JWT-shaped one in the Bearer header; a 401 flips the guess once and the
+ * winner is remembered per endpoint.
+ */
+type AuthMode = "x-api-key" | "bearer";
+
+const guessAuthMode = (apiKey: string): AuthMode =>
+  /^eyJ/.test(apiKey) ? "bearer" : "x-api-key";
+
+const flip = (m: AuthMode): AuthMode => (m === "bearer" ? "x-api-key" : "bearer");
+
+type Session = { id: string; initialised: boolean; authMode?: AuthMode };
 
 /** Endpoint -> session. MCP servers may hand back a session id to reuse. */
 const sessions = new Map<string, Session>();
@@ -61,8 +76,9 @@ async function rpc(
     "mcp-protocol-version": PROTOCOL_VERSION,
   };
   if (apiKey) {
-    headers.authorization = `Bearer ${apiKey}`;
-    headers["x-api-key"] = apiKey;
+    const mode = session?.authMode ?? guessAuthMode(apiKey);
+    if (mode === "bearer") headers.authorization = `Bearer ${apiKey}`;
+    else headers["x-api-key"] = apiKey;
   }
   if (session?.id) headers["mcp-session-id"] = session.id;
 
@@ -86,13 +102,22 @@ async function rpc(
   }
 
   const sid = res.headers.get("mcp-session-id");
-  if (sid) sessions.set(url, { id: sid, initialised: session?.initialised ?? false });
+  if (sid) sessions.set(url, { id: sid, initialised: session?.initialised ?? false, authMode: session?.authMode });
 
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
     if (looksLikeDeadSession(res.status, detail)) {
       sessions.delete(url);
       return { ok: false, error: `MCP ${res.status}: session expired`, retryable: true };
+    }
+    // Composio's *portal* endpoint (connect.composio.dev) only accepts OAuth
+    // sign-in, never an API key. Name the actual mistake instead of "401".
+    if (res.status === 401 && /AuthKit JWT/i.test(detail)) {
+      return {
+        ok: false,
+        error:
+          "That URL is Composio's sign-in portal, which an API key can never open. Use an MCP server URL from your Composio dashboard instead.",
+      };
     }
     return { ok: false, error: `MCP ${res.status}: ${redact(detail).slice(0, 200)}` };
   }
@@ -183,21 +208,46 @@ function ensureInitialised(
   if (pending) return pending;
 
   const job = (async (): Promise<McpResult<true>> => {
-    const res = await rpc(
-      url,
-      apiKey,
-      "initialize",
-      {
-        protocolVersion: PROTOCOL_VERSION,
-        capabilities: {},
-        clientInfo: { name: "carvis-web", version: "1.0.0" },
-      },
-      signal,
-    );
+    const init = () =>
+      rpc(
+        url,
+        apiKey,
+        "initialize",
+        {
+          protocolVersion: PROTOCOL_VERSION,
+          capabilities: {},
+          clientInfo: { name: "carvis-web", version: "1.0.0" },
+        },
+        signal,
+      );
+
+    let res = await init();
+
+    // A 401 on the handshake may only mean the auth-mode guess was wrong —
+    // flip it and try once more. If that also fails, the key itself is the
+    // problem, and the first error names it under the more likely mode.
+    if (!res.ok && apiKey && res.error.startsWith("MCP 401")) {
+      const prior = sessions.get(url);
+      sessions.set(url, {
+        id: "",
+        initialised: false,
+        authMode: flip(prior?.authMode ?? guessAuthMode(apiKey)),
+      });
+      const retry = await init();
+      if (!retry.ok) {
+        sessions.delete(url);
+        return res;
+      }
+      res = retry;
+    }
     if (!res.ok) return res;
 
     const existing = sessions.get(url);
-    sessions.set(url, { id: existing?.id ?? "", initialised: true });
+    sessions.set(url, {
+      id: existing?.id ?? "",
+      initialised: true,
+      authMode: existing?.authMode,
+    });
 
     // The spec requires this before any other request, so await it rather
     // than racing it against tools/list — a strict server rejects the request
@@ -264,4 +314,24 @@ export async function callTool(
 /** Drop cached handshake state, e.g. after the user changes their endpoint. */
 export function forgetSession(url: string): void {
   sessions.delete(url);
+}
+
+/**
+ * Composio MCP servers refuse requests without a `user_id` query parameter
+ * ("required for security reasons"), and the session already knows the
+ * caller's Composio id — so the app appends it rather than asking people to
+ * hand-assemble URLs. Only touches composio.dev hosts, and never overrides
+ * an id the URL already carries.
+ */
+export function withUserId(url: string, cid: string): string {
+  if (!url || !cid) return url;
+  try {
+    const u = new URL(url);
+    if (!/(^|\.)composio\.dev$/i.test(u.hostname)) return url;
+    if (u.searchParams.has("user_id") || u.searchParams.has("connected_account_id")) return url;
+    u.searchParams.set("user_id", cid);
+    return u.toString();
+  } catch {
+    return url;
+  }
 }
