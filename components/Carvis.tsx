@@ -390,7 +390,9 @@ export default function Carvis() {
 
         {status && <p className="line status">{status}…</p>}
         {interim && <p className="line interim">{interim}</p>}
-        {lastAssistant && !status && <p className="line said">{lastAssistant}</p>}
+        {/* The branch card already shows the answer — repeating it down here
+            reads as a glitch, not a transcript. */}
+        {lastAssistant && !status && !branch && <p className="line said">{lastAssistant}</p>}
 
         {started && !supported && (
           <p className="line muted">

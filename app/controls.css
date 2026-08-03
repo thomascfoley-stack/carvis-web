@@ -9,12 +9,12 @@
 }
 
 /* ------------------------------ controls ----------------------------- */
-/* Deliberately large: these are reached for mid-conversation, often without
-   looking, and sometimes urgently. */
+/* Compact: controls, not billboards. 44px stays the floor — the minimum
+   reliable touch target on phones — but nothing stretches to fill the row. */
 
 .controls {
   display: flex;
-  gap: 12px;
+  gap: 10px;
   justify-content: center;
   width: min(44rem, 100%);
   margin: 4px auto 0;
@@ -24,11 +24,12 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
-  flex: 1;
-  min-height: 62px;
-  padding: 14px 22px;
-  border-radius: 16px;
+  gap: 7px;
+  flex: 0 1 auto;
+  min-width: 140px;
+  min-height: 44px;
+  padding: 7px 14px;
+  border-radius: 11px;
   border: 1px solid var(--line);
   background: rgba(8, 14, 28, 0.6);
   cursor: pointer;
@@ -44,11 +45,11 @@
 }
 
 .control .glyph {
-  font-size: 20px;
+  font-size: 14px;
   line-height: 1;
 }
 .control .label {
-  font-size: 15px;
+  font-size: 12.5px;
   letter-spacing: 0.06em;
 }
 
@@ -67,7 +68,7 @@
 
 @media (max-width: 520px) {
   .control .label {
-    font-size: 14px;
+    font-size: 12px;
   }
 }
 
