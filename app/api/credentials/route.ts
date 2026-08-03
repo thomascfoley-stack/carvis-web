@@ -7,7 +7,7 @@ import {
 } from "@/lib/credentials";
 import { encryptionConfigured } from "@/lib/crypto";
 import { dbEnabled } from "@/lib/db";
-import { forgetSession, listTools } from "@/lib/mcp";
+import { forgetSession, listTools, withUserId } from "@/lib/mcp";
 import { forgetCatalogue } from "@/lib/tools";
 import { loadPrefs, savePrefs } from "@/lib/prefs";
 import { LLM_PROVIDERS } from "@/lib/providers/llm";
@@ -100,9 +100,12 @@ export async function POST(req: Request) {
 
   // The endpoint or key may have changed; drop the cached MCP handshake and
   // the cached tool catalogue so the next turn reflects the new credentials.
+  // Runtime caches key on the user_id-scoped URL, so bust both spellings.
   if (saved.mcpUrl) {
-    forgetSession(saved.mcpUrl);
-    forgetCatalogue(saved.mcpUrl);
+    for (const u of [saved.mcpUrl, withUserId(saved.mcpUrl, session.cid)]) {
+      forgetSession(u);
+      forgetCatalogue(u);
+    }
   }
 
   const prefs = await loadPrefs(session.email);
@@ -119,10 +122,18 @@ export async function PUT(req: Request) {
 
   const creds = await loadCredentials(session.email);
   if (!creds.mcpUrl || !creds.composioKey) {
-    return Response.json({ ok: false, error: "Add an MCP endpoint and key first." });
+    // Say which half is missing — "endpoint and key" sent people hunting for
+    // a URL problem when the URL was fine and the key was never saved.
+    const missing =
+      !creds.mcpUrl && !creds.composioKey
+        ? "an MCP endpoint URL and its API key"
+        : !creds.mcpUrl
+          ? "the MCP endpoint URL"
+          : "the MCP API key — the URL is saved";
+    return Response.json({ ok: false, error: `Add ${missing} first.` });
   }
 
-  const res = await listTools(creds.mcpUrl, creds.composioKey, req.signal);
+  const res = await listTools(withUserId(creds.mcpUrl, session.cid), creds.composioKey, req.signal);
   if (!res.ok) return Response.json({ ok: false, error: redact(res.error) });
 
   return Response.json({
