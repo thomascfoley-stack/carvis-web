@@ -9,6 +9,7 @@ import { redact, safeMessage } from "../lib/redact.ts";
 import { defineNode } from "../lib/graph.ts";
 import { safeSampleJson } from "../lib/db.ts";
 import { createSentenceStream } from "../lib/sentences.ts";
+import { looksLikeEcho, isRealInterruption } from "../lib/voice.ts";
 import {
   encryptSecret,
   decryptSecret,
@@ -81,6 +82,40 @@ export async function libSuites(ctx) {
   t("handles Error objects", () => ok(typeof redact(new Error("boom sk-abc123def456")) === "string"));
   t("handles undefined", () => eq(redact(undefined), ""));
   t("safeMessage caps length", () => ok(safeMessage("x".repeat(500)).length <= 161));
+
+  /* ------------------------------- barge-in ----------------------------- */
+  section("barge-in classification");
+
+  const reply =
+    "Your calendar looks clear this afternoon. You have twelve unread emails, " +
+    "three of them matter, and the standup moved to two thirty. Want the details?";
+
+  t("pure echo is not an interruption", () => {
+    ok(!isRealInterruption("three of them matter and the standup", reply));
+  });
+  t("two fresh words over the echo interrupt", () => {
+    ok(isRealInterruption("cancel everything", reply));
+  });
+  t("a lone 'stop' interrupts", () => {
+    ok(isRealInterruption("stop", reply));
+  });
+  t("'wait' and 'hold on' interrupt", () => {
+    ok(isRealInterruption("wait", reply));
+    ok(isRealInterruption("hold on", reply));
+  });
+  t("'stop' the assistant itself just said does not", () => {
+    ok(!isRealInterruption("stop", "I will stop reading the list there."));
+  });
+  t("long-reply pollution no longer drowns the user", () => {
+    // The recognizer's utterance = minutes of echo + the user's words at the
+    // end. Only the recent window reaches the classifier, so judge that.
+    const recentWindow = "standup moved to two thirty want the details actually cancel my afternoon";
+    ok(isRealInterruption(recentWindow.split(/\s+/).slice(-8).join(" "), reply));
+  });
+  t("looksLikeEcho still catches straight playback", () => {
+    ok(looksLikeEcho("twelve unread emails three of them matter", reply));
+    ok(!looksLikeEcho("please book me a table for tonight", reply));
+  });
 
   /* ------------------------------ sentences ----------------------------- */
   section("sentences");
