@@ -418,7 +418,7 @@ export const TTS_PROVIDERS: TtsProvider[] = [
         // account with no uploads gets the public top hundred instead of an
         // empty picker.
         url: () => "https://api.fish.audio/model?page_size=100&self=true",
-        fallbackUrl: () => "https://api.fish.audio/model?page_size=100&sort_by=like_count",
+        fallbackUrl: () => "https://api.fish.audio/model?page_size=100&sort_by=score",
         headers: (s) => ({ authorization: `Bearer ${s.apiKey}` }),
         pick: (p) =>
           arrayIn(p, "items", "data").map((v) => ({
