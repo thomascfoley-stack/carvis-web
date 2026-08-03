@@ -258,6 +258,30 @@ export function startMcpMock(port) {
   const stats = { initializes: 0, calls: 0, listeds: 0, rejected404: 0 };
 
   const server = http.createServer(async (req, res) => {
+    // Real Composio rejects a request carrying both auth headers ("Multiple
+    // authentication modes were provided"). Enforce it here so the client can
+    // never regress to belt-and-braces auth again.
+    if (req.headers.authorization && req.headers["x-api-key"]) {
+      res.writeHead(401, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          error: { message: "Multiple authentication modes were provided. Provide exactly one authentication mode per request." },
+        }),
+      );
+      return;
+    }
+
+    // ?wantauth=bearer simulates a server that only accepts the Bearer form,
+    // exercising the client's 401 auth-mode flip — and, because every later
+    // request must keep succeeding, that the flipped mode survives the
+    // session-id update instead of reverting to the first guess.
+    const wantAuth = new URL(req.url, "http://x").searchParams.get("wantauth");
+    if (wantAuth === "bearer" && !req.headers.authorization) {
+      res.writeHead(401, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { message: "Bearer token required" } }));
+      return;
+    }
+
     const body = await readBody(req);
     const sid = req.headers["mcp-session-id"];
     const asSse = new URL(req.url, "http://x").searchParams.get("sse") === "1";
