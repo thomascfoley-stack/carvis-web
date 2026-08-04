@@ -34,8 +34,20 @@ export async function GET(req: Request) {
   // 2. Composio must actually hold the connection now.
   const conn = await getConnection(state.caid);
   if (!conn.ok) return fail(origin, `Could not verify the connection: ${conn.error}`);
-  if (conn.data.status && !["ACTIVE", "INITIATED"].includes(conn.data.status)) {
-    return fail(origin, `Google authorisation did not complete (${conn.data.status}).`);
+  // A missing status must never pass. getConnection coerces an unrecognised
+  // response shape to "", and the previous `conn.data.status && ...` guard
+  // treated that empty string as success — so any change to Composio's
+  // payload would have silently accepted FAILED or EXPIRED connections.
+  //
+  // INITIATED is still tolerated because Composio can lag briefly behind the
+  // browser redirect. It is safe only because state.cid is now always a
+  // freshly minted id: an INITIATED connection resolves no Gmail profile, so
+  // the email check below rejects the flow.
+  if (!["ACTIVE", "INITIATED"].includes(conn.data.status)) {
+    return fail(
+      origin,
+      `Google authorisation did not complete (${conn.data.status || "no status"}).`,
+    );
   }
 
   // 3. Identity comes from the Gmail profile behind *this session's* id.

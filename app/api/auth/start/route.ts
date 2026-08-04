@@ -1,6 +1,6 @@
 import { checkInvite, createState, newComposioUserId, stateCookie } from "@/lib/auth";
 import { composioEnabled, createConnectLink } from "@/lib/composio";
-import { dbEnabled, findUser } from "@/lib/db";
+import { dbEnabled } from "@/lib/db";
 import { safeMessage } from "@/lib/redact";
 
 export const runtime = "nodejs";
@@ -30,18 +30,22 @@ export async function GET(req: Request) {
     return bounce(origin, "That invite code isn't right.");
   }
 
-  // A returning user keeps their existing Composio identity.
-  const hint = (url.searchParams.get("email") ?? "").trim().toLowerCase();
-  let composioUserId = "";
-  if (hint) {
-    try {
-      const existing = await findUser(hint);
-      if (existing) composioUserId = existing.composio_user_id;
-    } catch {
-      /* fall through to a fresh id */
-    }
-  }
-  if (!composioUserId) composioUserId = newComposioUserId();
+  // ALWAYS a fresh, unguessable id — never one derived from anything the
+  // caller supplied.
+  //
+  // This route is unauthenticated by definition, so any caller-influenced
+  // Composio id becomes an identity claim. An earlier version accepted an
+  // `?email=` hint here and reused that user's existing Composio id "so a
+  // returning user keeps their identity". That handed anyone who knew a
+  // registered address a signed state cookie bound to the victim's tenant,
+  // and /callback derives identity from exactly that id — an unauthenticated
+  // account takeover requiring no interaction with Google at all.
+  //
+  // Returning users are re-attached to their original id in /callback, at
+  // line "Returning users keep their original Composio id" — but only AFTER
+  // the Gmail profile has proved who they are. Identity is established, then
+  // the id is looked up; never the reverse.
+  const composioUserId = newComposioUserId();
 
   const link = await createConnectLink("gmail", `${origin}/api/auth/callback`, composioUserId);
   if (!link.ok) return bounce(origin, link.error);
