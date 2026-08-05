@@ -5,7 +5,12 @@ import Link from "next/link";
 import Orb, { type BranchAnchor, type OrbState } from "./Orb";
 import { createSentenceStream } from "@/lib/sentences";
 import { Speaker } from "@/lib/speaker";
-import { getMicAnalyser, startMicAnalyser, stopMicAnalyser } from "@/lib/mic";
+import {
+  getMicAnalyser,
+  micAnalyserBlocksSpeech,
+  startMicAnalyser,
+  stopMicAnalyser,
+} from "@/lib/mic";
 import { Listener, isBackchannel, isBareCommand, speechSupported } from "@/lib/voice";
 
 type Turn = { role: "user" | "assistant"; text: string };
@@ -389,7 +394,9 @@ export default function Carvis() {
 
   const beginSession = useCallback(() => {
     speakerRef.current?.unlock();
-    void startMicAnalyser();
+    // On Android an open capture stream stops the recogniser hearing anything,
+    // so the visualiser stands down there and the microphone belongs to speech.
+    if (!micAnalyserBlocksSpeech()) void startMicAnalyser();
     setStarted(true);
 
     if (!supported) return;
