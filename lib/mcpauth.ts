@@ -137,10 +137,26 @@ export async function pkcePair(): Promise<{ verifier: string; challenge: string 
   return { verifier, challenge: b64url(new Uint8Array(digest)) };
 }
 
+/**
+ * A failed token request, carrying enough detail to decide whether the grant
+ * itself is dead. A network blip and a revoked refresh token are the same
+ * shape to the caller otherwise — and treating the first like the second
+ * throws away a working grant and forces a full re-consent.
+ */
+type TokenError = { error: string; status: number; code?: string };
+
+/** Only these mean "this grant will never work again". */
+export function terminalGrantFailure(e: TokenError): boolean {
+  if (["invalid_grant", "invalid_client", "unauthorized_client"].includes(e.code ?? "")) return true;
+  // A 400 or 401 from the token endpoint is the server rejecting the grant.
+  // Anything else — 0 (unreachable), 429, 5xx — is weather.
+  return e.status === 400 || e.status === 401;
+}
+
 async function tokenRequest(
   tokenEndpoint: string,
   params: Record<string, string>,
-): Promise<TokenSet | { error: string }> {
+): Promise<TokenSet | TokenError> {
   let res: Response;
   try {
     res = await fetch(tokenEndpoint, {
@@ -150,11 +166,16 @@ async function tokenRequest(
       cache: "no-store",
     });
   } catch (e) {
-    return { error: `Token request failed: ${redact(e).slice(0, 120)}` };
+    // Never reached the server: says nothing about whether the grant is valid.
+    return { error: `Token request failed: ${redact(e).slice(0, 120)}`, status: 0 };
   }
   const d = await res.json().catch(() => null);
   if (!res.ok || !d?.access_token) {
-    return { error: redact(d?.error_description ?? d?.error ?? `token endpoint ${res.status}`).slice(0, 160) };
+    return {
+      error: redact(d?.error_description ?? d?.error ?? `token endpoint ${res.status}`).slice(0, 160),
+      status: res.status,
+      code: typeof d?.error === "string" ? d.error : undefined,
+    };
   }
   const ttl = Number(d.expires_in) > 0 ? Number(d.expires_in) : 3600;
   return {
@@ -220,6 +241,10 @@ export async function ensureFreshMcpAuth(email: string, creds: Credentials): Pro
         mcpTokenExp: String(t.expiresAt),
       });
     }
+    // Transient: keep the grant. This turn's call will 401 and the next one
+    // refreshes again — far better than silently signing the user out of
+    // every integration because the token endpoint had a bad minute.
+    if (!terminalGrantFailure(t)) return creds;
   }
   return saveCredentials(email, { mcpToken: CLEAR_SECRET, mcpRefresh: CLEAR_SECRET });
 }

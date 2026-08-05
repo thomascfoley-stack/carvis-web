@@ -265,8 +265,13 @@ const toolNode = defineNode<
 >({
   id: (a) => `tool.${a.name.slice(0, 64)}`,
   run: (a) => runToolBody(a.name, a.input, a.ctx),
+  // The same noise discipline the chat route applies to model errors: a
+  // BYOK 401/403 is the user's own expired credential, and recording it to a
+  // shared, cross-tenant failures table is both useless and a privacy smell.
   soft: (out) =>
-    /^(That failed|Tool error)/.test(out)
+    /^(That failed|Tool error)/.test(out) &&
+    !/\bMCP 40[13]\b/.test(out) &&
+    !/authentication|api key|sign-in portal|unauthor/i.test(out)
       ? { class: "ToolFailed", message: out.slice(0, 500) }
       : null,
   sample: (a) => argShapes(a.input),

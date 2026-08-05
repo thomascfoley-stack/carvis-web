@@ -309,7 +309,11 @@ export async function dbSavePrefs(email: string, prefs: unknown): Promise<void> 
   await sql`
     INSERT INTO user_prefs (email, prefs, updated_at)
     VALUES (${email.toLowerCase()}, ${JSON.stringify(prefs)}::jsonb, now())
-    ON CONFLICT (email) DO UPDATE SET prefs = EXCLUDED.prefs, updated_at = now()
+    ON CONFLICT (email) DO UPDATE
+      -- Merge, don't replace. The caller seeds its patch from a read that may
+      -- have silently fallen back to defaults, and a whole-row replace would
+      -- then persist those defaults over every field it didn't mention.
+      SET prefs = user_prefs.prefs || EXCLUDED.prefs, updated_at = now()
   `;
 }
 

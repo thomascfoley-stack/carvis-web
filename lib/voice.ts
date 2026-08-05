@@ -180,7 +180,9 @@ export class Listener {
   setMuted(muted: boolean): void {
     if (!this.wantActive) return;
     this.bargeKeepFrom = null;
-    if (!muted) return;
+    // Abort on BOTH transitions. Muting alone left the utterance that was
+    // already accumulating alive, so anything said while muted was finalised
+    // after the unmute and delivered as the next message.
     try {
       this.recognition?.abort();
     } catch {

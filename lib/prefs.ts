@@ -57,12 +57,19 @@ export async function loadPrefs(email: string): Promise<Prefs> {
 export async function savePrefs(email: string, patch: Partial<Prefs>): Promise<Prefs> {
   if (!email) return { ...DEFAULT_PREFS };
 
+  // Only the patched keys are written; the database merges them onto whatever
+  // is actually stored. Seeding a full row from loadPrefs would persist
+  // defaults over the user's real settings whenever that read had failed.
   const current = await loadPrefs(email);
   const next = coerce({ ...current, ...patch });
+  const delta: Record<string, unknown> = {};
+  for (const k of Object.keys(patch) as (keyof Prefs)[]) {
+    if (patch[k] !== undefined) delta[k] = next[k];
+  }
 
   if (dbEnabled()) {
     try {
-      await dbSavePrefs(email, next);
+      await dbSavePrefs(email, delta);
       return next;
     } catch {
       /* fall through */

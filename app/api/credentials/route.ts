@@ -1,5 +1,6 @@
 import { sessionFromRequest } from "@/lib/auth";
 import {
+  CredentialsUnavailable,
   loadCredentials,
   maskCredentials,
   saveCredentials,
@@ -85,19 +86,33 @@ export async function POST(req: Request) {
     });
   }
 
-  const saved = await saveCredentials(session.email, {
-    mcpUrl: body?.mcpUrl,
-    composioKey: body?.composioKey,
-    llmProvider: body?.llmProvider,
-    llmModel: body?.llmModel,
-    llmKey: body?.llmKey,
-    llmBaseUrl: body?.llmBaseUrl,
-    ttsProvider: body?.ttsProvider,
-    ttsVoice: body?.ttsVoice,
-    ttsModel: body?.ttsModel,
-    ttsKey: body?.ttsKey,
-    ttsBaseUrl: body?.ttsBaseUrl,
-  });
+  // saveCredentials refuses to merge onto a baseline it could not read, so
+  // a store outage now surfaces as "try again" instead of silently blanking
+  // every stored secret the caller happened not to mention.
+  let saved;
+  try {
+    saved = await saveCredentials(session.email, {
+      mcpUrl: body?.mcpUrl,
+      composioKey: body?.composioKey,
+      llmProvider: body?.llmProvider,
+      llmModel: body?.llmModel,
+      llmKey: body?.llmKey,
+      llmBaseUrl: body?.llmBaseUrl,
+      ttsProvider: body?.ttsProvider,
+      ttsVoice: body?.ttsVoice,
+      ttsModel: body?.ttsModel,
+      ttsKey: body?.ttsKey,
+      ttsBaseUrl: body?.ttsBaseUrl,
+    });
+  } catch (e) {
+    if (e instanceof CredentialsUnavailable) {
+      return Response.json(
+        { error: "Couldn't read your saved settings, so nothing was changed. Try again shortly." },
+        { status: 503 },
+      );
+    }
+    throw e;
+  }
 
   // The endpoint or key may have changed; drop the cached MCP handshake and
   // the cached tool catalogue so the next turn reflects the new credentials.

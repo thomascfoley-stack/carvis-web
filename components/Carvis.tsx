@@ -13,7 +13,13 @@ import {
 } from "@/lib/mic";
 import { Listener, isBackchannel, isBareCommand, speechSupported } from "@/lib/voice";
 
-type Turn = { role: "user" | "assistant"; text: string };
+/**
+ * `turn` records which request produced this entry. A background turn can land
+ * its answer while a newer turn is still speaking, so "the last assistant
+ * entry" is not reliably the one being spoken — rewriting by position
+ * overwrote the wrong answer with the wrong text.
+ */
+type Turn = { role: "user" | "assistant"; text: string; turn?: number };
 
 export default function Carvis() {
   const [turns, setTurns] = useState<Turn[]>([]);
@@ -155,14 +161,21 @@ export default function Carvis() {
     setStatus("");
 
     if (cuttingAnswer) {
+      const owner = turnSeq.current;
       setTurns((prev) => {
         const next = [...prev];
-        const last = next[next.length - 1];
-        if (last?.role === "assistant") {
-          last.text = heard ? `${heard} —` : "—";
-        } else if (heard) {
-          next.push({ role: "assistant", text: `${heard} —` });
+        const text = heard ? `${heard} —` : "—";
+        // Rewrite the entry this turn produced, not whatever happens to be
+        // last — and replace it rather than mutating a state object in place.
+        let i = -1;
+        for (let k = next.length - 1; k >= 0; k--) {
+          if (next[k].role === "assistant" && next[k].turn === owner) {
+            i = k;
+            break;
+          }
         }
+        if (i >= 0) next[i] = { ...next[i], text };
+        else if (heard) next.push({ role: "assistant", text, turn: owner });
         return next;
       });
     }
@@ -374,7 +387,7 @@ export default function Carvis() {
       // actually reached the user, and appending the full text behind that
       // would tell the model they heard sentences they never did.
       if (assistant.trim() && !controller.signal.aborted) {
-        setTurns((prev) => [...prev, { role: "assistant", text: assistant.trim() }]);
+        setTurns((prev) => [...prev, { role: "assistant", text: assistant.trim(), turn: myTurn }]);
       }
 
       // A released turn speaks its answer as one consolidated report — after

@@ -1,5 +1,5 @@
 import { sessionFromRequest } from "@/lib/auth";
-import { loadCredentials } from "@/lib/credentials";
+import { CredentialsUnavailable, loadCredentials } from "@/lib/credentials";
 import { recordFailure } from "@/lib/db";
 import { loadMemories } from "@/lib/memory";
 import { withUserId } from "@/lib/mcp";
@@ -80,7 +80,21 @@ export async function POST(req: Request) {
 
   // Bring-your-own-key: every call is billed to the caller's own account, so
   // there is no owner default to fall back to and no quota to enforce.
-  const stored = await ensureFreshMcpAuth(session.email, await loadCredentials(session.email));
+  let stored;
+  try {
+    stored = await ensureFreshMcpAuth(session.email, await loadCredentials(session.email));
+  } catch (e) {
+    // "We could not read your settings" is not "you have no settings". The
+    // 428 below sends the browser to /setup, so answering it here threw
+    // onboarded users out of a conversation over a transient database blip.
+    if (e instanceof CredentialsUnavailable) {
+      return Response.json(
+        { error: "Can't reach your settings right now — try that again in a moment." },
+        { status: 503 },
+      );
+    }
+    throw e;
+  }
   // An OAuth-connected endpoint authenticates with the user's token (which
   // rides the composioKey slot — the client sends JWTs as Bearer). Key-based
   // Composio URLs still get the session's user id appended.
@@ -129,6 +143,8 @@ export async function POST(req: Request) {
       const messages: CanonMsg[] = [...history];
       /** True while the user has been handed back control mid-tool. */
       let detached = false;
+      /** Tool results are in hand but the model has not yet spoken to them. */
+      let pendingResults = false;
 
       try {
         for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
@@ -173,7 +189,14 @@ export async function POST(req: Request) {
             }
           }
 
-          if (failed || !calls.length) break;
+          if (failed || !calls.length) {
+            // The model answered without reaching for another tool, so it has
+            // already spoken to whatever results were outstanding. Leaving the
+            // flag set here would run the closing pass below and say the whole
+            // answer a second time.
+            pendingResults = false;
+            break;
+          }
 
           for (const c of calls) send({ t: "status", v: toolLabel(c.name) });
 
@@ -224,7 +247,30 @@ export async function POST(req: Request) {
 
           messages.push({ role: "assistant", text, toolCalls: calls });
           messages.push({ role: "tool", results });
+          pendingResults = true;
           send({ t: "status", v: "" });
+        }
+
+        // Running out of rounds mid-chain used to end the turn on raw tool
+        // output with nothing said — the user simply got silence. One more
+        // pass with the tools withheld forces a spoken answer from what we
+        // already have.
+        if (pendingResults) {
+          for await (const ev of streamLLM({
+            settings: {
+              providerId: creds.llmProvider,
+              model: creds.llmModel,
+              apiKey: creds.llmKey,
+              baseUrl: creds.llmBaseUrl || undefined,
+            },
+            system,
+            messages,
+            tools: [],
+            signal: req.signal,
+          })) {
+            if (ev.type === "text") send({ t: "text", v: ev.text });
+            else if (ev.type === "error") send({ t: "error", v: redact(ev.message) });
+          }
         }
 
         send({ t: "done" });

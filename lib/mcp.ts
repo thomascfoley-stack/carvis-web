@@ -170,14 +170,24 @@ async function withSession<T>(
   signal: AbortSignal | undefined,
   attempt: () => Promise<McpResult<T>>,
 ): Promise<McpResult<T>> {
+  const key = sessionKey(url, apiKey);
   let last: McpResult<T> = { ok: false, error: "MCP call never ran." };
-  for (let tries = 0; tries < 3; tries++) {
+  for (let tries = 0; tries < 4; tries++) {
     const init = await ensureInitialised(url, apiKey, signal);
     if (!init.ok) return init;
 
+    // Remember which session this attempt is about to use, so a failure can
+    // only retire THAT session.
+    const used = sessions.get(key)?.id;
     last = await attempt();
     if (last.ok || !last.retryable) return last;
-    sessions.delete(sessionKey(url, apiKey));
+
+    // Compare-and-delete. Under a burst — the chat route fires tool calls in
+    // parallel — every caller gets the same expiry at once, and a blind delete
+    // means each one destroys the fresh session another has just handshaken.
+    // They thrash, and a caller can exhaust its retries against a session that
+    // was actually fine. Only retire the session we ourselves just used.
+    if (sessions.get(key)?.id === used) sessions.delete(key);
   }
   return last;
 }
