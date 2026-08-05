@@ -132,6 +132,14 @@ export function startOpenAIMock(port) {
     const slow = /^SLOWTEXT:(\d+)$/.exec(text);
     if (slow) await new Promise((r) => setTimeout(r, Number(slow[1])));
 
+    // Real OpenAI-format endpoints 400 on an empty tools array; the mock must
+    // too, or the app can ship a request no provider would accept.
+    if (Array.isArray(body.tools) && body.tools.length === 0) {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { message: "Invalid 'tools': [] is too short" } }));
+      return;
+    }
+
     const tool = /^TOOL:([A-Za-z0-9_]+):(.*)$/s.exec(text);
     if (tool && !hasToolResult) {
       send({

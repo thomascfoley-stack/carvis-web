@@ -269,27 +269,36 @@ export async function* streamLLM(args: {
     headers["authorization"] = `Bearer ${key}`;
   }
 
+  // An EMPTY tools array is not the same as no tools: OpenAI-format endpoints
+  // reject `"tools": []` with a 400 ("[] is too short"). The chat route
+  // deliberately withholds tools for its closing pass, so omitting the key
+  // entirely is the difference between a spoken answer and an error banner.
+  const hasTools = args.tools.length > 0;
   const body = anthropic
     ? {
         model,
         max_tokens: args.maxTokens ?? 1024,
         system: args.system,
         messages: toAnthropic(args.messages),
-        tools: args.tools,
+        ...(hasTools ? { tools: args.tools } : {}),
         stream: true,
       }
     : {
         model,
         max_tokens: args.maxTokens ?? 1024,
         messages: toOpenAI(args.messages, args.system),
-        tools: args.tools.map((t) => ({
-          type: "function",
-          function: {
-            name: t.name,
-            description: t.description,
-            parameters: t.input_schema,
-          },
-        })),
+        ...(hasTools
+          ? {
+              tools: args.tools.map((t) => ({
+                type: "function",
+                function: {
+                  name: t.name,
+                  description: t.description,
+                  parameters: t.input_schema,
+                },
+              })),
+            }
+          : {}),
         stream: true,
       };
 
