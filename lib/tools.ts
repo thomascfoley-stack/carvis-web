@@ -85,12 +85,25 @@ export type Catalogue = {
 const CATALOGUE_TTL_MS = 5 * 60_000;
 const catalogueCache = new Map<string, { at: number; cat: Catalogue }>();
 
-export function forgetCatalogue(mcpUrl: string): void {
-  catalogueCache.delete(mcpUrl);
+/**
+ * Keyed by user AND endpoint.
+ *
+ * The endpoint alone is not a tenant boundary: every OAuth user pastes the
+ * same connect.composio.dev URL, and on that path the chat route deliberately
+ * does NOT append user_id — so a URL-keyed cache served one person's tool list
+ * to everyone else on the instance. Tools are not secret in themselves, but
+ * the list names which apps someone has connected, and the model would offer
+ * to call integrations the caller does not have.
+ */
+const catalogueKey = (email: string, mcpUrl: string) => `${email.toLowerCase()}\u0000${mcpUrl}`;
+
+export function forgetCatalogue(email: string, mcpUrl: string): void {
+  catalogueCache.delete(catalogueKey(email, mcpUrl));
 }
 
 export async function buildCatalogue(
   creds: Credentials,
+  email: string,
   signal?: AbortSignal,
 ): Promise<Catalogue> {
   if (!creds.mcpUrl || !creds.composioKey) {
@@ -102,7 +115,8 @@ export async function buildCatalogue(
     };
   }
 
-  const hit = catalogueCache.get(creds.mcpUrl);
+  const key = catalogueKey(email, creds.mcpUrl);
+  const hit = catalogueCache.get(key);
   if (hit && Date.now() - hit.at < CATALOGUE_TTL_MS) return hit.cat;
 
   const res = await listTools(creds.mcpUrl, creds.composioKey, signal);
@@ -138,7 +152,7 @@ export async function buildCatalogue(
         ? `Showing ${MAX_REMOTE_TOOLS} of ${res.data.length} tools from your MCP endpoint.`
         : "",
   };
-  catalogueCache.set(creds.mcpUrl, { at: Date.now(), cat });
+  catalogueCache.set(key, { at: Date.now(), cat });
   if (catalogueCache.size > 2000) catalogueCache.clear();
   return cat;
 }

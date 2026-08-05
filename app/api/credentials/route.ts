@@ -105,7 +105,7 @@ export async function POST(req: Request) {
   if (saved.mcpUrl) {
     for (const u of [saved.mcpUrl, withUserId(saved.mcpUrl, session.cid)]) {
       forgetSession(u);
-      forgetCatalogue(u);
+      forgetCatalogue(session.email, u);
     }
   }
 

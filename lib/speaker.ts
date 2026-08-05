@@ -23,11 +23,34 @@ function isAbort(e: unknown): boolean {
   return /abort/i.test(String(err?.message ?? e ?? ""));
 }
 
+/** A deadline we imposed ourselves, not the user interrupting. */
+function isTimeout(e: unknown): boolean {
+  const err = e as { name?: string; message?: string } | null;
+  return err?.name === "TimeoutError" || /timed out/i.test(String(err?.message ?? ""));
+}
+
+/**
+ * A rendered chunk: decoded audio, or an instruction to speak this one on the
+ * device (the 409 handshake). Kept as data so it is played at the queue head
+ * in order, rather than whenever its fetch happened to return.
+ */
+type Rendered = AudioBuffer | { device: string } | null;
+
+const isDevice = (r: Rendered): r is { device: string } =>
+  !!r && typeof (r as { device?: unknown }).device === "string";
+
+/**
+ * Past this a voice request is treated as failed. Without it a stalled request
+ * holds a fetch slot and parks the drain forever, which presents as the app
+ * going permanently mute for no visible reason.
+ */
+const FETCH_TIMEOUT_MS = 15_000;
+
 export class Speaker {
   private ctx: AudioContext | null = null;
   private analyser: AnalyserNode | null = null;
 
-  private queue: { text: string; job: Promise<AudioBuffer | null>; aside: boolean }[] = [];
+  private queue: { text: string; job: Promise<Rendered>; aside: boolean }[] = [];
   private draining = false;
   private current: AudioBufferSourceNode | null = null;
   private controllers: AbortController[] = [];
@@ -114,7 +137,7 @@ export class Speaker {
 
   /** Rough word timing for the on-device voice, so barge-in can still compute
    *  how much of a device-spoken chunk was actually heard. */
-  private deviceUtterance: { text: string; startedAt: number } | null = null;
+  private deviceUtterance: { text: string; startedAt: number; aside: boolean } | null = null;
 
   /** Must be called from a user gesture — browsers block audio otherwise. */
   unlock(): void {
@@ -152,7 +175,35 @@ export class Speaker {
       this.analyser.connect(this.ctx.destination);
       this.timeData = new Uint8Array(this.analyser.fftSize);
     }
-    if (this.ctx.state === "suspended") void this.ctx.resume();
+    if (this.ctx.state !== "running") {
+      void this.ctx
+        .resume()
+        .then(() => this.drain(this.generation))
+        .catch(() => undefined);
+    }
+  }
+
+  /**
+   * Get the context actually running, or report that we couldn't.
+   *
+   * A suspended or interrupted context accepts `start()` and then never fires
+   * `ended`, which parks the drain on a promise that can never settle. iOS
+   * uses "interrupted" after a phone call or a Siri invocation, so testing
+   * only for "suspended" misses the most common cause in the wild.
+   */
+  private async ensureRunning(): Promise<boolean> {
+    const ctx = this.ctx;
+    if (!ctx) return false;
+    // Read through a closure: control-flow narrowing would otherwise decide
+    // the state cannot be "running" below, when resuming is the entire point.
+    const running = () => (ctx.state as string) === "running";
+    if (running()) return true;
+    try {
+      await ctx.resume();
+    } catch {
+      /* the state check below is the real answer */
+    }
+    return running();
   }
 
   /** Frequency data is far richer than RMS for driving a visualisation. */
@@ -176,7 +227,7 @@ export class Speaker {
    * whose audio hadn't arrived yet as idle.
    */
   get answerInFlight(): boolean {
-    if (this.deviceUtterance) return true;
+    if (this.deviceUtterance && !this.deviceUtterance.aside) return true;
     if (this.playing && !this.playing.aside) return true;
     return this.queue.some((q) => !q.aside);
   }
@@ -251,17 +302,32 @@ export class Speaker {
     if (!clean) return;
 
     if (this.useBrowserVoice) {
-      this.speakOnDevice(clean, aside);
+      void this.speakOnDevice(clean, aside);
       return;
     }
-    if (!this.ctx) return;
+    if (!this.ctx) {
+      // Silence with no explanation is indistinguishable from a broken app.
+      this.onError("Audio isn't started yet — tap Wake CARVIS.", false);
+      return;
+    }
 
     const gen = this.generation;
 
-    const job = (async (): Promise<AudioBuffer | null> => {
+    const job = (async (): Promise<Rendered> => {
       await this.acquireSlot();
       const ac = new AbortController();
       this.controllers.push(ac);
+      // A request that never settles is worse than one that fails: it holds a
+      // fetch slot forever AND parks the drain on an unresolvable promise, so
+      // every later sentence queues up mute behind it. Mobile dead zones and
+      // stalled invocations both do exactly this.
+      const deadline = setTimeout(() => {
+        try {
+          ac.abort(new DOMException("Voice request timed out", "TimeoutError"));
+        } catch {
+          ac.abort();
+        }
+      }, FETCH_TIMEOUT_MS);
       try {
         if (gen !== this.generation) return null;
 
@@ -275,10 +341,12 @@ export class Speaker {
 
           if (res.status === 409) {
             // Server is configured for the on-device voice — the one case
-            // where switching for the whole session is correct.
+            // where switching for the whole session is correct. Speaking here
+            // would jump the queue, because responses arrive out of order;
+            // hand it back so drain plays it at the head like anything else.
             this.useBrowserVoice = true;
-            this.speakOnDevice(clean, aside);
-            return null;
+            if (gen !== this.generation) return null;
+            return { device: clean };
           }
 
           if (!res.ok) {
@@ -313,11 +381,17 @@ export class Speaker {
         }
       } catch (e) {
         // Interrupting cancels every queued request. That is the feature
-        // working, not the voice breaking — say nothing.
+        // working, not the voice breaking — say nothing. A timeout aborts the
+        // same way but is a genuine failure, so it must not be swallowed.
+        if (isTimeout(e)) {
+          this.onError("The voice service didn't respond in time.", false);
+          return null;
+        }
         if (isAbort(e) || gen !== this.generation) return null;
         this.onError(`Could not reach the voice service: ${String(e).slice(0, 120)}`, false);
         return null;
       } finally {
+        clearTimeout(deadline);
         this.controllers = this.controllers.filter((c) => c !== ac);
         this.releaseSlot();
       }
@@ -336,22 +410,45 @@ export class Speaker {
         if (gen !== this.generation) break;
 
         const head = this.queue[0];
-        const buf = await head.job;
+        const rendered = await head.job;
         // Check the generation BEFORE consuming: stop() replaces the queue,
         // so a shift here would eat the *next* turn's first sentence.
         if (gen !== this.generation) break;
-        this.queue.shift();
-        if (!buf || !this.ctx || !this.analyser) continue;
 
+        // A context that isn't running can never fire `ended`, so playing into
+        // it parks this loop forever and every later sentence queues up behind
+        // a promise that will never settle — silence for the rest of the
+        // session. Leave the chunk queued, say why, and let unlock() resume.
+        if (rendered && !(await this.ensureRunning())) {
+          this.onError("Audio is paused — tap the page to resume.", false);
+          break;
+        }
+
+        this.queue.shift();
+        if (!rendered || !this.ctx || !this.analyser) continue;
+
+        if (isDevice(rendered)) {
+          // The 409 handshake, played in queue order like any other chunk.
+          await this.speakOnDevice(rendered.device, head.aside);
+          continue;
+        }
+
+        const buf = rendered;
         this.setSpeaking(true);
         await new Promise<void>((resolve) => {
+          let settled = false;
+          let guard: ReturnType<typeof setTimeout> | undefined;
           const src = this.ctx!.createBufferSource();
-          src.buffer = buf;
-          src.connect(this.analyser!);
-          src.onended = () => {
+          const finish = () => {
+            if (settled) return;
+            settled = true;
+            if (guard) clearTimeout(guard);
             if (this.current === src) this.current = null;
             resolve();
           };
+          src.buffer = buf;
+          src.connect(this.analyser!);
+          src.onended = finish;
           this.playing = {
             text: head.text,
             startedAt: this.ctx!.currentTime,
@@ -360,6 +457,9 @@ export class Speaker {
           };
           this.current = src;
           src.start();
+          // Belt and braces: if `ended` never arrives — a mid-play suspend, a
+          // device change — this releases the drain instead of wedging it.
+          guard = setTimeout(finish, (buf.duration + 1) * 1000 + 500);
         });
 
         if (gen === this.generation) {
@@ -388,9 +488,13 @@ export class Speaker {
    * *chose* the browser provider (the 409 handshake) — never as a stand-in
    * for a real voice that hiccuped.
    */
-  private speakOnDevice(text: string, aside = false): void {
-    if (typeof window === "undefined" || !window.speechSynthesis) return;
+  private speakOnDevice(text: string, aside = false): Promise<void> {
+    if (typeof window === "undefined" || !window.speechSynthesis) {
+      this.onError("This browser has no on-device voice — add a voice key in Setup.", false);
+      return Promise.resolve();
+    }
 
+    return new Promise<void>((done) => {
     const utter = new SpeechSynthesisUtterance(text);
     utter.rate = 1.05;
     utter.pitch = 0.9;
@@ -404,21 +508,26 @@ export class Speaker {
     this.liveUtterances.add(utter);
     utter.onstart = () => {
       this.setSpeaking(true);
-      if (!aside) this.deviceUtterance = { text, startedAt: Date.now() };
+      // Tracked even for asides: the echo reference is what stops the
+      // recogniser hearing a spoken progress line and calling it a barge.
+      this.deviceUtterance = { text, startedAt: Date.now(), aside };
     };
+    let settled = false;
     const finish = () => {
+      if (settled) return;
+      settled = true;
       this.liveUtterances.delete(utter);
-      if (!aside) {
-        this.spoken.push(text);
-        this.deviceUtterance = null;
-      }
+      if (!aside) this.spoken.push(text);
+      this.deviceUtterance = null;
       this.remember(text);
       if (!window.speechSynthesis.speaking) this.setSpeaking(false);
+      done();
     };
     utter.onend = finish;
     utter.onerror = finish;
 
     window.speechSynthesis.speak(utter);
+    });
   }
 
   /**
@@ -430,7 +539,7 @@ export class Speaker {
 
     // On-device voice mid-utterance: estimate progress at ~3 words/second,
     // which is what both engines average at rate 1.05.
-    if (this.deviceUtterance) {
+    if (this.deviceUtterance && !this.deviceUtterance.aside) {
       const words = this.deviceUtterance.text.split(/\s+/).filter(Boolean);
       const heardCount = Math.min(
         words.length,
@@ -467,6 +576,9 @@ export class Speaker {
     this.generation++;
     this.queue = [];
     this.deviceUtterance = null;
+    // Cleared here too: drain's own cleanup is generation-gated, so after a
+    // barge this stayed set and kept answerInFlight lying about what is live.
+    this.playing = null;
     for (const c of this.controllers) c.abort();
     this.controllers = [];
     // Wake anything queued for a fetch slot; each will see the stale

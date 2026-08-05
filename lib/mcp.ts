@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { redact } from "./redact";
 
 /**
@@ -41,8 +43,23 @@ const flip = (m: AuthMode): AuthMode => (m === "bearer" ? "x-api-key" : "bearer"
 
 type Session = { id: string; initialised: boolean; authMode?: AuthMode };
 
-/** Endpoint -> session. MCP servers may hand back a session id to reuse. */
+/**
+ * (Endpoint + credential) -> session.
+ *
+ * Keying on the URL alone leaked across tenants. Every OAuth user pastes the
+ * SAME endpoint (connect.composio.dev/mcp) and is told apart only by their
+ * bearer token, so one user's mcp-session-id was attached to every other
+ * user's requests to that host — a session handle minted under someone else's
+ * identity. The credential is hashed, never stored: this map is a cache key,
+ * not a credential store, and a heap dump of it must reveal nothing.
+ */
 const sessions = new Map<string, Session>();
+
+const fingerprint = (apiKey: string): string =>
+  apiKey ? createHash("sha256").update(apiKey).digest("base64url").slice(0, 22) : "anon";
+
+/** The identity under which a session may be reused: endpoint AND caller. */
+const sessionKey = (url: string, apiKey: string): string => `${url}\u0000${fingerprint(apiKey)}`;
 
 let nextId = 1;
 
@@ -67,7 +84,8 @@ async function rpc(
 ): Promise<McpResult<any>> {
   if (!url) return { ok: false, error: "No MCP endpoint configured." };
 
-  const session = sessions.get(url);
+  const key = sessionKey(url, apiKey);
+  const session = sessions.get(key);
 
   const headers: Record<string, string> = {
     "content-type": "application/json",
@@ -102,12 +120,12 @@ async function rpc(
   }
 
   const sid = res.headers.get("mcp-session-id");
-  if (sid) sessions.set(url, { id: sid, initialised: session?.initialised ?? false, authMode: session?.authMode });
+  if (sid) sessions.set(key, { id: sid, initialised: session?.initialised ?? false, authMode: session?.authMode });
 
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
     if (looksLikeDeadSession(res.status, detail)) {
-      sessions.delete(url);
+      sessions.delete(key);
       return { ok: false, error: `MCP ${res.status}: session expired`, retryable: true };
     }
     // Composio's *portal* endpoint (connect.composio.dev) only accepts OAuth
@@ -159,7 +177,7 @@ async function withSession<T>(
 
     last = await attempt();
     if (last.ok || !last.retryable) return last;
-    sessions.delete(url);
+    sessions.delete(sessionKey(url, apiKey));
   }
   return last;
 }
@@ -202,9 +220,10 @@ function ensureInitialised(
   apiKey: string,
   signal?: AbortSignal,
 ): Promise<McpResult<true>> {
-  if (sessions.get(url)?.initialised) return Promise.resolve({ ok: true, data: true });
+  const key = sessionKey(url, apiKey);
+  if (sessions.get(key)?.initialised) return Promise.resolve({ ok: true, data: true });
 
-  const pending = inflightInit.get(url);
+  const pending = inflightInit.get(key);
   if (pending) return pending;
 
   const job = (async (): Promise<McpResult<true>> => {
@@ -227,23 +246,23 @@ function ensureInitialised(
     // flip it and try once more. If that also fails, the key itself is the
     // problem, and the first error names it under the more likely mode.
     if (!res.ok && apiKey && res.error.startsWith("MCP 401")) {
-      const prior = sessions.get(url);
-      sessions.set(url, {
+      const prior = sessions.get(key);
+      sessions.set(key, {
         id: "",
         initialised: false,
         authMode: flip(prior?.authMode ?? guessAuthMode(apiKey)),
       });
       const retry = await init();
       if (!retry.ok) {
-        sessions.delete(url);
+        sessions.delete(key);
         return res;
       }
       res = retry;
     }
     if (!res.ok) return res;
 
-    const existing = sessions.get(url);
-    sessions.set(url, {
+    const existing = sessions.get(key);
+    sessions.set(key, {
       id: existing?.id ?? "",
       initialised: true,
       authMode: existing?.authMode,
@@ -257,8 +276,8 @@ function ensureInitialised(
     return { ok: true, data: true };
   })();
 
-  inflightInit.set(url, job);
-  return job.finally(() => inflightInit.delete(url));
+  inflightInit.set(key, job);
+  return job.finally(() => inflightInit.delete(key));
 }
 
 export async function listTools(
@@ -313,7 +332,11 @@ export async function callTool(
 
 /** Drop cached handshake state, e.g. after the user changes their endpoint. */
 export function forgetSession(url: string): void {
-  sessions.delete(url);
+  // The credential may have changed too, so drop every session for this
+  // endpoint rather than guessing which key the caller now holds.
+  for (const k of [...sessions.keys()]) {
+    if (k.startsWith(`${url}\u0000`)) sessions.delete(k);
+  }
 }
 
 /**

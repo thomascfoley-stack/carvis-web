@@ -99,7 +99,7 @@ export async function POST(req: Request) {
   const [memories, prefs, catalogue] = await Promise.all([
     loadMemories(session.email),
     loadPrefs(session.email),
-    buildCatalogue(creds, req.signal),
+    buildCatalogue(creds, session.email, req.signal),
   ]);
 
   const system = systemPrompt({
