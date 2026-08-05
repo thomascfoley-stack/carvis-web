@@ -61,26 +61,38 @@ export function checkInvite(supplied: string): boolean {
   return safeEqual(supplied.trim(), expected);
 }
 
-/**
- * Optional hard allowlist, layered on top of the invite code. Empty means
- * "anyone holding a valid invite code", which is the multi-tenant default.
- */
-export function isAllowed(email: string): boolean {
-  const list = allowedEmails();
-  if (!list.length) return true;
-  return list.includes(email.trim().toLowerCase());
-}
-
 /** Optional domain restriction, e.g. "composio.dev,example.com". */
-export function domainAllowed(email: string): boolean {
-  const domains = cfg("ALLOWED_DOMAINS")
+export function allowedDomains(): string[] {
+  return cfg("ALLOWED_DOMAINS")
     .split(",")
     .map((d) => d.trim().toLowerCase().replace(/^@/, ""))
     .filter(Boolean);
-  if (!domains.length) return true;
-  const at = email.lastIndexOf("@");
+}
+
+/**
+ * May this address sign in?
+ *
+ * The two rules are alternatives, not hurdles. Requiring BOTH — as an earlier
+ * version did by checking them separately — means locking the instance to a
+ * company domain silently blocks everyone at that company who is not ALSO
+ * named individually, which is the opposite of what "let the company in"
+ * means. So: either your domain is welcome, or you are named personally.
+ *
+ * With neither configured the instance is open, which is the multi-tenant
+ * default and why this cannot be the only gate — the invite code and the
+ * OAuth round trip still apply.
+ */
+export function maySignIn(email: string): boolean {
+  const list = allowedEmails();
+  const domains = allowedDomains();
+  if (!list.length && !domains.length) return true;
+
+  const clean = email.trim().toLowerCase();
+  if (list.includes(clean)) return true;
+
+  const at = clean.lastIndexOf("@");
   if (at < 0) return false;
-  return domains.includes(email.slice(at + 1).toLowerCase());
+  return domains.includes(clean.slice(at + 1));
 }
 
 function secret(): string {

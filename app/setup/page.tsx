@@ -602,14 +602,28 @@ export default function SetupPage() {
             <span className="note">https only — the key travels with every request.</span>
           </div>
         )}
+        {/* When the deployment supplies a voice, a key here is an upgrade path,
+            not a requirement — so it must not read like a blocked step. */}
+        {c.houseVoice && !c.ttsKey.set && (
+          <span className="note">
+            A voice is included — you don’t need a key for this. Add one below only
+            if you want a different voice or your own quota.
+          </span>
+        )}
         {ttsP?.needsKey && (
           <div className="field">
-            <label>{keyLabel("API key", c.ttsKey)}</label>
+            <label>{keyLabel(c.houseVoice ? "API key (optional)" : "API key", c.ttsKey)}</label>
             <input
               type="password"
               value={form.ttsKey}
               onChange={(e) => setForm({ ...form, ttsKey: e.target.value })}
-              placeholder={c.ttsKey.set ? "leave blank to keep the stored key" : "paste key"}
+              placeholder={
+                c.ttsKey.set
+                  ? "leave blank to keep the stored key"
+                  : c.houseVoice
+                    ? "optional — leave blank to use the included voice"
+                    : "paste key"
+              }
               autoComplete="off"
             />
             {ttsP.keyUrl && (

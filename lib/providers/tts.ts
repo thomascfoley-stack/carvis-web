@@ -479,7 +479,7 @@ type SynthResult = { ok: true; audio: ArrayBuffer } | { ok: false; error: string
  * 401/403 from the user's own key is configuration too — a missing key and a
  * revoked one are the same problem with different spellings.
  */
-const isConfigState = (error: string) =>
+export const isConfigState = (error: string) =>
   error === "browser-tts" ||
   / API key configured\.$/.test(error) ||
   /key first\.$/.test(error) ||

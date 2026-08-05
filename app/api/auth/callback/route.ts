@@ -2,8 +2,7 @@ import {
   STATE_COOKIE,
   clearState,
   createSession,
-  domainAllowed,
-  isAllowed,
+  maySignIn,
   readCookie,
   readState,
   sessionCookie,
@@ -55,11 +54,8 @@ export async function GET(req: Request) {
   if (!email) {
     return fail(origin, "Connected, but Gmail did not return a profile. Try again.");
   }
-  if (!domainAllowed(email)) {
-    return fail(origin, `${email} is not on an allowed domain for this instance.`);
-  }
-  if (!isAllowed(email)) {
-    return fail(origin, `${email} is not on the allowlist for this instance.`);
+  if (!maySignIn(email)) {
+    return fail(origin, `${email} is not permitted to use this instance.`);
   }
 
   // 4. Returning users keep their original Composio id so connections and

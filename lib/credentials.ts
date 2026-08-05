@@ -1,5 +1,6 @@
 import { decryptSecret, encryptSecret, maskSecret, masterKeyId } from "./crypto";
 import { dbEnabled, dbLoadCredentials, dbSaveCredentials } from "./db";
+import { houseVoiceAvailable } from "./housevoice";
 
 /**
  * Per-user credentials — bring-your-own-key.
@@ -253,7 +254,11 @@ export async function secretsUnreadable(email: string): Promise<boolean> {
 
 /** True once the user has supplied everything the app needs to function. */
 export function isOnboarded(c: Credentials): boolean {
-  return !!((c.mcpToken || c.composioKey) && c.llmKey && c.ttsKey);
+  // A voice is no longer something every user has to go and buy: when the
+  // deployment supplies one, only the model key is theirs to bring. Inference
+  // still bills the caller, which is the part that actually costs money.
+  const hasVoice = !!c.ttsKey || c.ttsProvider === "browser" || houseVoiceAvailable();
+  return !!((c.mcpToken || c.composioKey) && c.llmKey && hasVoice);
 }
 
 /** What the browser is allowed to see: presence and a masked hint, never the key. */
@@ -273,5 +278,7 @@ export function maskCredentials(c: Credentials) {
     llmKey: { set: !!c.llmKey, hint: maskSecret(c.llmKey) },
     ttsKey: { set: !!c.ttsKey, hint: maskSecret(c.ttsKey) },
     onboarded: isOnboarded(c),
+    // Presence only — the deployment's key itself never leaves the server.
+    houseVoice: houseVoiceAvailable(),
   };
 }
