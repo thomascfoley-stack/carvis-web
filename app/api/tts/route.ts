@@ -83,6 +83,7 @@ export async function POST(req: Request) {
           voiceId: audition || house.voiceId,
           model: auditionModel || house.model,
           apiKey: house.apiKey,
+          baseUrl: house.baseUrl,
         }
       : {
           providerId: creds.ttsProvider,

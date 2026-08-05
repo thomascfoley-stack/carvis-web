@@ -10,11 +10,40 @@
 
 import http from "node:http";
 
-const TINY_MP3 = Buffer.from(
-  // A syntactically valid, silent MPEG frame — enough for decode paths.
-  "fffb90640000000000000000000000000000000000000000000000000000000000000000",
-  "hex",
-);
+/**
+ * Real, decodable audio.
+ *
+ * A bare MPEG frame header is syntactically valid but no browser will actually
+ * decode it, so decodeAudioData rejects and the client reports "audio this
+ * browser can't play" — which looks exactly like a production bug and cost real
+ * time to tell apart. A minimal PCM WAV decodes everywhere, and browsers sniff
+ * the bytes rather than trusting the content-type, so the route can keep
+ * declaring audio/mpeg.
+ */
+const TINY_WAV = (() => {
+  const sampleRate = 8000;
+  const samples = 400; // 50ms
+  const data = Buffer.alloc(samples * 2);
+  for (let i = 0; i < samples; i++) {
+    // A quiet tone rather than digital silence: some decoders elide silence.
+    data.writeInt16LE(Math.round(Math.sin((i / sampleRate) * 2 * Math.PI * 440) * 2000), i * 2);
+  }
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0);
+  header.writeUInt32LE(36 + data.length, 4);
+  header.write("WAVE", 8);
+  header.write("fmt ", 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20); // PCM
+  header.writeUInt16LE(1, 22); // mono
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * 2, 28);
+  header.writeUInt16LE(2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write("data", 36);
+  header.writeUInt32LE(data.length, 40);
+  return Buffer.concat([header, data]);
+})();
 
 const sse = (res) => {
   res.writeHead(200, {
@@ -236,7 +265,7 @@ export function startTtsMock(port) {
     }
 
     res.writeHead(200, { "content-type": "audio/mpeg" });
-    res.end(TINY_MP3);
+    res.end(TINY_WAV);
   });
   return listen(server, port);
 }

@@ -27,6 +27,8 @@ export type HouseVoice = {
   apiKey: string;
   voiceId: string;
   model: string;
+  /** Only meaningful for providers whose endpoint is not absolute. */
+  baseUrl?: string;
 };
 
 /**
@@ -65,6 +67,10 @@ export function houseVoice(): HouseVoice | null {
     apiKey: key.apiKey,
     voiceId: cfg("TTS_VOICE") || DEFAULT_VOICE_ID,
     model: cfg("TTS_MODEL") || DEFAULT_MODEL,
+    // An OpenAI-compatible provider builds `${baseUrl}/audio/speech`; without
+    // this the house voice could only ever be Fish, and pointing it anywhere
+    // else produced an unparseable URL rather than an honest error.
+    baseUrl: cfg("TTS_BASE_URL") || undefined,
   };
 }
 
