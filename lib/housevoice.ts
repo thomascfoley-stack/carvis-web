@@ -37,13 +37,32 @@ const DEFAULT_VOICE_ID = "90e65eaaf50e4470b8e6d43ee6afd7d5";
 const DEFAULT_PROVIDER = "fish";
 const DEFAULT_MODEL = "speech-1.6";
 
+/**
+ * Where the key comes from, in order of specificity.
+ *
+ * CARVIS_TTS_KEY is the explicit setting and can name any provider. FISH_API_KEY
+ * is the conventional name a Fish key already tends to be stored under, and
+ * accepting it means an operator who has one configured gets the house voice
+ * without having to duplicate the secret under a second name — one fewer copy
+ * of a credential in the world.
+ */
+function houseKey(): { apiKey: string; impliedProvider: string } | null {
+  const explicit = cfg("TTS_KEY");
+  if (explicit) return { apiKey: explicit, impliedProvider: DEFAULT_PROVIDER };
+  const fish = env("FISH_API_KEY");
+  // A key named for Fish is a Fish key: don't let an unrelated TTS_PROVIDER
+  // send it somewhere it cannot possibly authenticate.
+  if (fish) return { apiKey: fish, impliedProvider: "fish" };
+  return null;
+}
+
 /** Configured when — and only when — the deployment has supplied a key. */
 export function houseVoice(): HouseVoice | null {
-  const apiKey = cfg("TTS_KEY");
-  if (!apiKey) return null;
+  const key = houseKey();
+  if (!key) return null;
   return {
-    providerId: cfg("TTS_PROVIDER") || DEFAULT_PROVIDER,
-    apiKey,
+    providerId: cfg("TTS_PROVIDER") || key.impliedProvider,
+    apiKey: key.apiKey,
     voiceId: cfg("TTS_VOICE") || DEFAULT_VOICE_ID,
     model: cfg("TTS_MODEL") || DEFAULT_MODEL,
   };
@@ -51,7 +70,7 @@ export function houseVoice(): HouseVoice | null {
 
 /** Safe to tell the browser: whether a voice is provided, never which key. */
 export function houseVoiceAvailable(): boolean {
-  return !!cfg("TTS_KEY");
+  return !!houseKey();
 }
 
 /**
