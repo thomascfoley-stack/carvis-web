@@ -18,7 +18,12 @@ import { SESSION_COOKIE } from "@/lib/auth";
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
-  if (pathname === "/login" || pathname.startsWith("/api/")) {
+  // /mic is the microphone diagnostics page. It stays reachable signed-out on
+  // purpose: debugging a device problem should not also be a debate about the
+  // session, and it lets the same check run in an incognito window, which is
+  // the cleanest way to rule an extension in or out. It reads nothing and
+  // reports only the visitor's own browser back to themselves.
+  if (pathname === "/login" || pathname === "/mic" || pathname.startsWith("/api/")) {
     return NextResponse.next();
   }
 
