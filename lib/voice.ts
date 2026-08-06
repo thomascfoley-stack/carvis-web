@@ -17,6 +17,8 @@ type Handlers = {
   onBargeIn: () => void;
   onStateChange: (listening: boolean) => void;
   onError: (message: string) => void;
+  /** Optional sink for diagnostics that are not worth interrupting the user. */
+  onReport?: (node: string, message: string) => void;
 };
 
 export function speechSupported(): boolean {
@@ -157,6 +159,8 @@ export class Listener {
   private lastHeardWhileSpeaking = 0;
   /** Word index where the user's speech starts in a barged utterance. */
   private bargeKeepFrom: number | null = null;
+  /** Consecutive transient recogniser failures, for backoff and honesty. */
+  private networkErrors = 0;
   /** What was being spoken at the barge — the echo to strip against. */
   private spokenAtBarge = "";
 
@@ -171,6 +175,15 @@ export class Listener {
   bargeInEnabled: () => boolean = () => true;
 
   constructor(private handlers: Handlers) {}
+
+  /**
+   * Fire-and-forget telemetry. Voice failures happen in the browser, where no
+   * server log can see them, so without this the whole client half of the app
+   * was invisible when it broke.
+   */
+  private report(node: string, message: string): void {
+    this.handlers.onReport?.(node, message);
+  }
 
   /**
    * Muting has to stop *capture*, not just delivery. The recognizer keeps
@@ -288,6 +301,8 @@ export class Listener {
         return;
       }
 
+      // Anything heard means the pipe is healthy again.
+      this.networkErrors = 0;
       if (interim) this.handlers.onInterim(interim.trim());
       if (final.trim()) {
         // The recognizer often finalises its echo-filled utterance a beat
@@ -304,9 +319,30 @@ export class Listener {
       if (err === "not-allowed" || err === "service-not-allowed") {
         this.wantActive = false;
         this.handlers.onError("Microphone access denied. Allow it in your browser settings.");
-      } else if (err !== "no-speech" && err !== "aborted") {
-        this.handlers.onError(`Microphone error: ${err}`);
+        return;
       }
+      if (err === "no-speech" || err === "aborted") return;
+
+      // Chrome's recogniser streams audio to a Google service, so "network"
+      // fires on any hiccup between here and there — a flaky connection, a
+      // VPN, a corporate proxy, or simply the service throttling. It is
+      // transient and self-healing: onend respawns us. Shouting "Microphone
+      // error: network" at the first one told the user their microphone was
+      // broken when nothing was wrong, and it reappeared constantly.
+      if (err === "network") {
+        this.networkErrors++;
+        this.report("voice.network", `recogniser network error x${this.networkErrors}`);
+        // Only speak up once it is clearly not self-healing.
+        if (this.networkErrors === 4) {
+          this.handlers.onError(
+            "Speech recognition keeps losing its connection — check your network, or type instead.",
+          );
+        }
+        return;
+      }
+
+      this.report(`voice.${String(err).slice(0, 32)}`, `recogniser error: ${err}`);
+      this.handlers.onError(`Microphone error: ${err}`);
     };
 
     rec.onend = () => {
@@ -315,8 +351,11 @@ export class Listener {
       // means nothing in the next one.
       this.bargeKeepFrom = null;
       // Chrome ends the session after a silence; restart to stay always-on.
+      // After repeated transient failures, back off rather than hammering a
+      // service that is already struggling — capped so recovery stays quick.
       if (this.wantActive) {
-        this.restartTimer = setTimeout(() => this.spawn(), 250);
+        const backoff = this.networkErrors > 1 ? Math.min(250 * 2 ** (this.networkErrors - 1), 8000) : 250;
+        this.restartTimer = setTimeout(() => this.spawn(), backoff);
       }
     };
 

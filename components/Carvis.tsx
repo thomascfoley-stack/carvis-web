@@ -12,6 +12,7 @@ import {
   stopMicAnalyser,
 } from "@/lib/mic";
 import { Listener, isBackchannel, isBareCommand, speechSupported } from "@/lib/voice";
+import { installGlobalReporter, reportClientFailure } from "@/lib/report";
 
 /**
  * `turn` records which request produced this entry. A background turn can land
@@ -90,11 +91,20 @@ export default function Carvis() {
     speakerRef.current = new Speaker();
   }
 
+  // Anything the browser can see and the server cannot goes to the shared
+  // failures table, so "what is broken" is one query rather than two.
+  useEffect(() => installGlobalReporter(), []);
+
   // Voice failures must be visible. Silently missing audio reads as "broken"
   // with no way to tell whether the model, the network, or a key is at fault.
   useEffect(() => {
     const speaker = speakerRef.current;
-    if (speaker) speaker.onError = (msg, fellBack) => setVoiceError({ msg, fellBack });
+    if (speaker) {
+      speaker.onError = (msg, fellBack) => {
+        setVoiceError({ msg, fellBack });
+        reportClientFailure("speaker.tts", msg);
+      };
+    }
   }, []);
 
   useEffect(() => {
@@ -367,6 +377,7 @@ export default function Carvis() {
     } catch (e: any) {
       if (e?.name !== "AbortError") {
         failed = true;
+        reportClientFailure("client.turn", String(e?.message ?? e));
         setError(own() ? String(e?.message ?? e) : `Your earlier request failed: ${String(e?.message ?? e)}`);
       }
     } finally {
@@ -448,6 +459,7 @@ export default function Carvis() {
       },
       onStateChange: setListening,
       onError: setError,
+      onReport: reportClientFailure,
     });
 
     // Echo is judged against everything recently audible — asides included,
