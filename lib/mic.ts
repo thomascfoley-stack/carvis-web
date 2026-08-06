@@ -15,26 +15,27 @@ let stream: MediaStream | null = null;
 let starting = false;
 
 /**
- * Android Chrome will not share the microphone.
+ * Never hold the microphone while the recogniser needs it.
  *
- * An open getUserMedia stream starves SpeechRecognition of audio: the
- * recogniser starts, reports nothing, and the assistant simply never hears
- * you. Desktop Chrome shares the device happily, and iOS has no
- * SpeechRecognition at all — so Android is the only platform that has to
- * choose between animating the user's voice and actually hearing it.
+ * This analyser exists only to make the cloud react to your voice. It is a
+ * flourish. Speech recognition is the product — and the two compete for the
+ * same device.
  *
- * Hearing wins. On Android the orb reacts to output only, which costs a
- * flourish; the alternative cost voice input entirely, which is how this
- * shipped. It went unnoticed because the device matrix runs under Playwright,
- * where SpeechRecognition does not exist and the conflict cannot occur.
+ * The first version of this restricted the rule to Android, on the theory that
+ * desktop Chrome shares the microphone happily. It does not, reliably: a
+ * starved recogniser does not report "device busy", it reports `network`,
+ * because it fails while streaming audio to the speech service. That sends you
+ * hunting a connection problem that was never there — which is exactly what
+ * happened on the live site.
+ *
+ * So: wherever speech recognition exists, the recogniser gets the microphone
+ * to itself and the cloud reacts to output only. Where it does not exist —
+ * every browser on iOS — nothing is competing and the analyser runs, which is
+ * also where it matters most, because typing is the only input.
  */
 export function micAnalyserBlocksSpeech(): boolean {
   if (typeof navigator === "undefined" || typeof window === "undefined") return false;
-  const android = /android/i.test(navigator.userAgent);
-  const hasSpeech = !!(
-    (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-  );
-  return android && hasSpeech;
+  return !!((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
 }
 
 export async function startMicAnalyser(): Promise<AnalyserNode | null> {
