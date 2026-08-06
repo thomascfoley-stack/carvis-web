@@ -8,6 +8,7 @@ import { loadPrefs } from "@/lib/prefs";
 import { systemPrompt } from "@/lib/prompt";
 import { streamLLM, type CanonMsg, type ToolCall } from "@/lib/providers/llm";
 import { redact } from "@/lib/redact";
+import { toSnapshot } from "@/lib/snapshot";
 import { buildCatalogue, runTool, toolLabel } from "@/lib/tools";
 
 export const runtime = "nodejs";
@@ -200,6 +201,10 @@ export async function POST(req: Request) {
 
           for (const c of calls) send({ t: "status", v: toolLabel(c.name) });
 
+          // The card shows the rows; the voice keeps consolidating. Reading
+          // twelve subject lines aloud is useless, but showing twelve is
+          // faster to take in than any sentence describing them.
+
           const work = Promise.all(
             calls.map(async (c) => {
               const content = redact(
@@ -211,6 +216,8 @@ export async function POST(req: Request) {
                 }),
               );
               // Failure capture lives inside runTool's graph node now.
+              const snapshot = toSnapshot(c.name, content);
+              if (snapshot) send({ t: "card", v: snapshot });
               return { id: c.id, name: c.name, content };
             }),
           );

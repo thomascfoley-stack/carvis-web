@@ -162,3 +162,88 @@
     max-height: 7.5em;
   }
 }
+
+/* The snapshot rows. The card stopped being a sentence and became a glance:
+   the voice consolidates, the screen shows the list. Wider and scrollable,
+   because twelve emails at once is the whole point — but still capped so it
+   never becomes a window sitting on top of the cloud. */
+.branch-card:has(.branch-rows) {
+  max-width: min(420px, 82vw);
+}
+
+.branch-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 15em;
+  overflow-y: auto;
+  /* The card is pointer-transparent so the cloud stays draggable; the list
+     has to opt back in or it could not be scrolled. */
+  pointer-events: auto;
+  -webkit-mask-image: linear-gradient(#000 86%, transparent);
+  mask-image: linear-gradient(#000 86%, transparent);
+}
+
+.branch-rows .row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0 8px;
+  padding: 5px 0;
+  border-bottom: 1px solid rgba(111, 216, 255, 0.1);
+  font-size: 12.5px;
+  line-height: 1.35;
+}
+.branch-rows .row:last-child { border-bottom: none; }
+
+.row-primary {
+  color: #e2f0fc;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.row-secondary {
+  grid-column: 1;
+  color: #8fb3cc;
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.row-meta {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+  color: #6fd8ff;
+  font-size: 11px;
+  white-space: nowrap;
+  opacity: 0.85;
+}
+
+/* Unread, or an invitation you have not answered — where the eye should land. */
+.branch-rows .row.hot .row-primary {
+  color: #ffffff;
+  font-weight: 500;
+}
+.branch-rows .row.hot::before {
+  content: "";
+  position: absolute;
+  margin-left: -9px;
+  margin-top: 6px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #6fd8ff;
+}
+
+.branch-rows .row.more {
+  color: #7f9bb0;
+  font-size: 11px;
+  font-style: italic;
+  border-bottom: none;
+}
+
+@media (max-width: 480px) {
+  .branch-card:has(.branch-rows) { max-width: 84vw; }
+  .branch-rows { max-height: 11em; }
+  .branch-rows .row { font-size: 12px; }
+}

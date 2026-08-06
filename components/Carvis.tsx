@@ -13,6 +13,7 @@ import {
 } from "@/lib/mic";
 import { Listener, isBackchannel, isBareCommand, speechSupported } from "@/lib/voice";
 import { installGlobalReporter, reportClientFailure } from "@/lib/report";
+import type { Snapshot } from "@/lib/snapshot";
 
 /**
  * `turn` records which request produced this entry. A background turn can land
@@ -53,6 +54,14 @@ export default function Carvis() {
    */
   const [branch, setBranch] = useState<{ id: number; kind: string } | null>(null);
   const [branchText, setBranchText] = useState("");
+  /**
+   * The rows behind the answer. Speech and screen want opposite things: the
+   * voice says "twelve unread, three matter" because reading twelve subjects
+   * aloud is useless, while the eye takes in all twelve faster than any
+   * sentence describing them. So the card shows the list and the voice keeps
+   * consolidating.
+   */
+  const [card, setCard] = useState<Snapshot | null>(null);
   const branchCardRef = useRef<HTMLDivElement>(null);
 
   const speakerRef = useRef<Speaker | null>(null);
@@ -233,6 +242,7 @@ export default function Carvis() {
     // camera before a fresh branch can claim it.
     setBranch(null);
     setBranchText("");
+    setCard(null);
     let branchActive = false;
 
     speaker?.resetTranscript();
@@ -353,6 +363,10 @@ export default function Carvis() {
                 setBranch({ id: myTurn, kind: String(ev.v) });
               }
             }
+          } else if (ev.t === "card") {
+            // Rows arrive the moment the tool returns — well before the model
+            // has finished deciding what to say about them.
+            if (own()) setCard(ev.v as Snapshot);
           } else if (ev.t === "note") {
             if (own()) setNote(ev.v);
           } else if (ev.t === "error") {
@@ -510,8 +524,21 @@ export default function Carvis() {
 
         {branch && (
           <div className="branch-card" ref={branchCardRef} aria-live="polite">
-            <div className="branch-kind">{branch.kind}</div>
-            <div className="branch-text">{branchText || "Working…"}</div>
+            <div className="branch-kind">{card?.kind ?? branch.kind}</div>
+            {card ? (
+              <ul className="branch-rows">
+                {card.rows.map((r, i) => (
+                  <li key={i} className={r.emphasis ? "row hot" : "row"}>
+                    <span className="row-primary">{r.primary}</span>
+                    {r.secondary && <span className="row-secondary">{r.secondary}</span>}
+                    {r.meta && <span className="row-meta">{r.meta}</span>}
+                  </li>
+                ))}
+                {card.more ? <li className="row more">and {card.more} more</li> : null}
+              </ul>
+            ) : (
+              <div className="branch-text">{branchText || "Working…"}</div>
+            )}
           </div>
         )}
 
