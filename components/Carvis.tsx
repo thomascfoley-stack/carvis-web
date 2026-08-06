@@ -24,7 +24,6 @@ type Turn = { role: "user" | "assistant"; text: string; turn?: number };
 
 export default function Carvis() {
   const [turns, setTurns] = useState<Turn[]>([]);
-  const [partial, setPartial] = useState("");
   const [interim, setInterim] = useState("");
   const [status, setStatus] = useState("");
   const [note, setNote] = useState("");
@@ -189,7 +188,6 @@ export default function Carvis() {
         return next;
       });
     }
-    setPartial("");
   }, []);
 
   /* ------------------------------ sending ----------------------------- */
@@ -229,7 +227,6 @@ export default function Carvis() {
     setVoiceError(null);
     setNote("");
     setInterim("");
-    setPartial("");
     setThinking(true);
 
     // A new task is the zoom-out: the previous result's branch releases the
@@ -309,7 +306,6 @@ export default function Carvis() {
               else held.push(chunk);
             }
             if (own()) {
-              setPartial(assistant);
               setThinking(false);
               // The result writes itself onto the branch as it is spoken.
               if (branchActive) setBranchText(assistant);
@@ -388,8 +384,7 @@ export default function Carvis() {
         setStatus("");
         abortRef.current = null;
         busyRef.current = false;
-        setPartial("");
-      }
+          }
       bgJobs.current.delete(myTurn);
       syncBanner();
 
@@ -493,7 +488,6 @@ export default function Carvis() {
 
   /* -------------------------------- view ------------------------------ */
 
-  const lastAssistant = partial || turns.filter((t) => t.role === "assistant").slice(-1)[0]?.text;
 
   return (
     <main className="stage">
@@ -540,10 +534,14 @@ export default function Carvis() {
         {note && <p className="line muted">{note}</p>}
 
         {status && <p className="line status">{status}…</p>}
+        {/* YOUR words stay: seeing what was heard is how you know it heard you
+            right, and it is the one thing a voice interface genuinely needs to
+            show. CARVIS's own words deliberately do NOT appear — reading a
+            reply a beat before it is spoken spoils the delivery and turns a
+            conversation into a transcript you race ahead of. It speaks; you
+            listen. The full exchange is still kept in `turns` for the model's
+            history, it is simply not put on screen. */}
         {interim && <p className="line interim">{interim}</p>}
-        {/* The branch card already shows the answer — repeating it down here
-            reads as a glitch, not a transcript. */}
-        {lastAssistant && !status && !branch && <p className="line said">{lastAssistant}</p>}
 
         {started && !supported && (
           <p className="line muted">
