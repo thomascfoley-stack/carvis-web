@@ -78,3 +78,31 @@ export function stopMicAnalyser(): void {
   ctx = null;
   analyser = null;
 }
+
+/**
+ * Settle the microphone permission, then get out of the way.
+ *
+ * The recogniser needs permission but must not share the device. Holding a
+ * stream open starves it; never opening one leaves it as the first thing to
+ * ask, and a recogniser that starts before permission is resolved dies while
+ * streaming and reports `network` — a connection error for a permission
+ * problem, which is what sent this hunt in the wrong direction twice.
+ *
+ * So: open the device, confirm it works, and release it immediately. The
+ * permission is now granted and the hardware is free before the recogniser
+ * touches it.
+ */
+export async function primeMicPermission(): Promise<{ ok: boolean; detail: string }> {
+  if (typeof navigator === "undefined" || !navigator.mediaDevices) {
+    return { ok: false, detail: "no mediaDevices" };
+  }
+  try {
+    const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const label = s.getAudioTracks()[0]?.label || "unnamed device";
+    // Release straight away — the point was the permission, not the stream.
+    s.getTracks().forEach((t) => t.stop());
+    return { ok: true, detail: label };
+  } catch (e: any) {
+    return { ok: false, detail: `${e?.name ?? "error"}: ${String(e?.message ?? e).slice(0, 80)}` };
+  }
+}

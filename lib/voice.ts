@@ -155,6 +155,12 @@ export class Listener {
   private recognition: any = null;
   private wantActive = false;
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * True between start() and onend. Chrome allows ONE recogniser per page;
+   * a second overlapping instance does not fail cleanly, it degrades the
+   * service and comes back as `network`. Every respawn path has to check.
+   */
+  private live = false;
   /** Last moment the recognizer reported audio during our own speech. */
   private lastHeardWhileSpeaking = 0;
   /** Word index where the user's speech starts in a barged utterance. */
@@ -220,6 +226,7 @@ export class Listener {
 
   stop(): void {
     this.wantActive = false;
+    this.live = false;
     if (this.restartTimer) clearTimeout(this.restartTimer);
     this.restartTimer = null;
     if (this.recognition) {
@@ -233,7 +240,7 @@ export class Listener {
   }
 
   private spawn(): void {
-    if (!this.wantActive) return;
+    if (!this.wantActive || this.live) return;
 
     const Ctor = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     const rec = new Ctor();
@@ -242,7 +249,10 @@ export class Listener {
     rec.lang = "en-GB";
     rec.maxAlternatives = 1;
 
-    rec.onstart = () => this.handlers.onStateChange(true);
+    rec.onstart = () => {
+      this.live = true;
+      this.handlers.onStateChange(true);
+    };
 
     rec.onresult = (event: any) => {
       let interim = "";
@@ -346,6 +356,7 @@ export class Listener {
     };
 
     rec.onend = () => {
+      this.live = false;
       this.handlers.onStateChange(false);
       // A barge boundary indexes into the dead session's utterance — it
       // means nothing in the next one.
@@ -363,6 +374,7 @@ export class Listener {
     try {
       rec.start();
     } catch {
+      this.live = false;
       // start() throws if a previous instance hasn't fully released yet.
       this.restartTimer = setTimeout(() => this.spawn(), 400);
     }

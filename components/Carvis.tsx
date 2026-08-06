@@ -8,6 +8,7 @@ import { Speaker } from "@/lib/speaker";
 import {
   getMicAnalyser,
   micAnalyserBlocksSpeech,
+  primeMicPermission,
   startMicAnalyser,
   stopMicAnalyser,
 } from "@/lib/mic";
@@ -425,14 +426,30 @@ export default function Carvis() {
 
   /* ------------------------------ microphone -------------------------- */
 
-  const beginSession = useCallback(() => {
+  const beginSession = useCallback(async () => {
     speakerRef.current?.unlock();
-    // On Android an open capture stream stops the recogniser hearing anything,
-    // so the visualiser stands down there and the microphone belongs to speech.
-    if (!micAnalyserBlocksSpeech()) void startMicAnalyser();
     setStarted(true);
 
-    if (!supported) return;
+    if (!supported) {
+      // No recogniser to starve, so the visualiser is free to have the device.
+      void startMicAnalyser();
+      return;
+    }
+
+    // Settle the permission BEFORE the recogniser starts, then release the
+    // device. A recogniser that starts while permission is still unresolved
+    // dies mid-stream and reports `network` — a connection error for what is
+    // actually a permission problem, which is what made this so hard to see.
+    const primed = await primeMicPermission();
+    if (!primed.ok) {
+      reportClientFailure("voice.permission", `mic unavailable: ${primed.detail}`);
+      setError(
+        primed.detail.startsWith("NotAllowed")
+          ? "Microphone access was blocked. Allow it in your browser settings, then reload."
+          : `Couldn't open the microphone (${primed.detail}). Type below instead.`,
+      );
+      return;
+    }
 
     const listener = new Listener({
       onFinal: (text) => {
@@ -543,7 +560,7 @@ export default function Carvis() {
         )}
 
         {!started && (
-          <button className="ignition" onClick={beginSession}>
+          <button className="ignition" onClick={() => void beginSession()}>
             <span>Wake CARVIS</span>
             <small>Audio needs a click before it can start</small>
           </button>
