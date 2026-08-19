@@ -650,7 +650,13 @@ async function fetchVoicesBody(s: TtsSettings, signal?: AbortSignal): Promise<Vo
   // An empty personal library is not an error — offer the public list.
   if (!voices.length && index.live.fallbackUrl) {
     const second = await pullVoices(index.live, index.live.fallbackUrl(s), provider.label, s, signal);
-    if (Array.isArray(second)) voices = second;
+    // The fallback's own failure IS the diagnosis. Discarding it flattened a
+    // 401 from the user's key or a 429 from the provider into the generic
+    // "returned no voices", which hides the cause from the user and, because
+    // the config-state and retry predicates both match on the error text,
+    // captured user configuration and upstream throttling as defects.
+    if (!Array.isArray(second)) return { ok: false, error: second.error };
+    voices = second;
   }
   if (!voices.length) return { ok: false, error: `${provider.label} returned no voices.` };
 
