@@ -151,6 +151,13 @@ export function stripBargePrefix(text: string, keepFrom: number, spoken: string)
   return words.slice(cut).join(" ");
 }
 
+/**
+ * Consecutive transient recogniser failures before we stop assuming it will
+ * heal itself: the point at which we tell the user, and the only point worth
+ * reporting.
+ */
+const NETWORK_GIVE_UP = 4;
+
 export class Listener {
   private recognition: any = null;
   private wantActive = false;
@@ -341,9 +348,14 @@ export class Listener {
       // broken when nothing was wrong, and it reappeared constantly.
       if (err === "network") {
         this.networkErrors++;
-        this.report("voice.network", `recogniser network error x${this.networkErrors}`);
-        // Only speak up once it is clearly not self-healing.
-        if (this.networkErrors === 4) {
+        // Report at the same moment we speak up, and only then. Reporting
+        // every blip put the running count in the message, which defeated the
+        // reporter's own one-a-minute dedupe — each new count is a new key —
+        // so a single flaky connection posted a row per error and buried the
+        // defect queue. A run that heals itself is the network, not a defect;
+        // one that reaches this threshold is a session that actually broke.
+        if (this.networkErrors === NETWORK_GIVE_UP) {
+          this.report("voice.network", `recogniser network error x${NETWORK_GIVE_UP}`);
           this.handlers.onError(
             "Speech recognition keeps losing its connection — check your network, or type instead.",
           );
