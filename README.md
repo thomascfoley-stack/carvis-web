@@ -132,7 +132,11 @@ never merges. The node contract and that loop: `docs/graph-engineering.md`.
   Text input and speech output work everywhere.
 - The macOS original's AppleScript/screen-reading powers stay on macOS.
 
-## Licence
+## Contributing
 
-The upstream project is free for personal, non-commercial use; commercial use
-requires a licence. See the original repository.
+Bug reports, feature ideas, and PRs all welcome. See
+[CONTRIBUTING.md](./CONTRIBUTING.md) for setup and the PR checklist.
+
+## License
+
+MIT, see [LICENSE](./LICENSE).
